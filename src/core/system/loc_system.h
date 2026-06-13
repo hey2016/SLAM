@@ -6,11 +6,16 @@
 #define LIGHTNING_LOC_SYSTEM_H
 
 #include <tf2_ros/transform_broadcaster.h>
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <ros/ros.h>
+#include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <visualization_msgs/Marker.h>
 
-#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include <livox_ros_driver2/CustomMsg.h>
 
 #include "common/eigen_types.h"
 #include "common/imu.h"
@@ -21,6 +26,8 @@ namespace lightning {
 namespace loc {
 class Localization;
 }
+class EvaluationWriter;
+class InputHealthLogger;
 
 class LocSystem {
    public:
@@ -41,31 +48,51 @@ class LocSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// 处理点云
-    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
-    void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
+    void ProcessLidar(const sensor_msgs::PointCloud2ConstPtr& cloud);
+    void ProcessLidar(const livox_ros_driver2::CustomMsgConstPtr& cloud);
 
     /// 实时模式下的spin
     void Spin();
 
    private:
+    void PublishLocalizationOutputs(const geometry_msgs::TransformStamped& pose_msg);
+    nav_msgs::Odometry MakeOdometryMsg(const geometry_msgs::TransformStamped& pose_msg) const;
+    visualization_msgs::Marker MakePoseMarker(const geometry_msgs::TransformStamped& pose_msg) const;
+    void CheckInputTfHealth(const ros::TimerEvent& event);
+
     Options options_;
 
     std::shared_ptr<loc::Localization> loc_ = nullptr;  // 定位接口
+    std::shared_ptr<EvaluationWriter> evaluation_writer_ = nullptr;
 
     std::atomic_bool loc_started_ = false;  // 是否开启定位
     std::atomic_bool map_loaded_ = false;   // 地图是否已载入
 
-    /// 实时模式下的ros2 node, subscribers
-    rclcpp::Node::SharedPtr node_;
+    /// 实时模式下的ROS1 node, subscribers
+    std::unique_ptr<ros::NodeHandle> node_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
 
     std::string imu_topic_;
     std::string cloud_topic_;
     std::string livox_topic_;
+    std::string input_odom_topic_ = "/odom";
+    std::string map_frame_ = "map";
+    std::string odom_frame_ = "odom";
+    std::string base_frame_ = "base_link";
+    std::string livox_frame_ = "livox_frame";
 
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
-    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
+    ros::Subscriber imu_sub_;
+    ros::Subscriber cloud_sub_;
+    ros::Subscriber livox_sub_;
+    ros::Subscriber input_odom_sub_;
+    ros::Publisher odom_pub_;
+    ros::Publisher path_pub_;
+    ros::Publisher marker_pub_;
+    ros::Timer input_health_timer_;
+    nav_msgs::Path path_msg_;
+    std::shared_ptr<InputHealthLogger> input_health_logger_ = nullptr;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_ = nullptr;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_ = nullptr;
 };
 
 };  // namespace lightning

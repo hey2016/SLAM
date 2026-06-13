@@ -11,7 +11,7 @@ void PointCloudPreprocess::Set(LidarType lid_type, double bld, int pfilt_num) {
     point_filter_num_ = pfilt_num;
 }
 
-void PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg, PointCloudType::Ptr &pcl_out) {
+void PointCloudPreprocess::Process(const sensor_msgs::PointCloud2ConstPtr &msg, PointCloudType::Ptr &pcl_out) {
     switch (lidar_type_) {
         case LidarType::OUST64:
             Oust64Handler(msg);
@@ -32,7 +32,7 @@ void PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 ::SharedP
     *pcl_out = cloud_out_;
 }
 
-void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg,
+void PointCloudPreprocess::Process(const livox_ros_driver2::CustomMsgConstPtr &msg,
                                    PointCloudType::Ptr &pcl_out) {
     cloud_out_.clear();
     cloud_full_.clear();
@@ -67,9 +67,9 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
             return;
         }
 
-        if ((abs(cloud_full_[i].x - cloud_full_[i - 1].x) > 1e-7) ||
+        if (((abs(cloud_full_[i].x - cloud_full_[i - 1].x) > 1e-7) ||
             (abs(cloud_full_[i].y - cloud_full_[i - 1].y) > 1e-7) ||
-            (abs(cloud_full_[i].z - cloud_full_[i - 1].z) > 1e-7) &&
+            (abs(cloud_full_[i].z - cloud_full_[i - 1].z) > 1e-7)) &&
                 (cloud_full_[i].x * cloud_full_[i].x + cloud_full_[i].y * cloud_full_[i].y +
                      cloud_full_[i].z * cloud_full_[i].z >
                  (blind_ * blind_))) {
@@ -91,7 +91,7 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     *pcl_out = cloud_out_;
 }
 
-void PointCloudPreprocess::Oust64Handler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+void PointCloudPreprocess::Oust64Handler(const sensor_msgs::PointCloud2ConstPtr &msg) {
     cloud_out_.clear();
     cloud_full_.clear();
 
@@ -131,7 +131,7 @@ void PointCloudPreprocess::Oust64Handler(const sensor_msgs::msg::PointCloud2::Sh
     cloud_out_.is_dense = false;
 }
 
-void PointCloudPreprocess::RoboSenseHandler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+void PointCloudPreprocess::RoboSenseHandler(const sensor_msgs::PointCloud2ConstPtr &msg) {
     cloud_out_.clear();
     cloud_full_.clear();
 
@@ -141,7 +141,7 @@ void PointCloudPreprocess::RoboSenseHandler(const sensor_msgs::msg::PointCloud2:
     int plsize = pl_orig.size();
     cloud_out_.reserve(plsize);
 
-    double head_time = msg->header.stamp.sec + msg->header.stamp.nanosec / 1e9;
+    double head_time = msg->header.stamp.toSec();
 
     /// RoboSense的时间戳是double, 均为linux时间且单位为秒，这里减去header time并乘以1000得到毫秒为单位的时间戳
 
@@ -177,7 +177,7 @@ void PointCloudPreprocess::RoboSenseHandler(const sensor_msgs::msg::PointCloud2:
     cloud_out_.is_dense = false;
 }
 
-void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::PointCloud2ConstPtr &msg) {
     cloud_out_.clear();
     cloud_full_.clear();
 

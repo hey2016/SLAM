@@ -9,12 +9,12 @@ common:
 fasterlio:
   lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
   scan_line: 32
-  blind: 0.1                # 盲区，小于盲区距离的不会处理
+  blind: 0.3                # 盲区，小于盲区距离的不会处理
   time_scale: 1e-3             # 兼容不同数据集的时间单位，仅对Velodyne LiDAR(lidar_type=2)生效
 
   skip_lidar_num: 0 # 点云的跳帧情况
-  point_filter_num: 4 # 点云采样参数
-  max_iteration: 4 # 最大迭代次数
+  point_filter_num: 3 # 点云采样参数
+  max_iteration: 6 # 最大迭代次数
   filter_size_scan: 0.5 # 对scan进行的降采样
   filter_size_map: 0.5
 
@@ -54,7 +54,7 @@ g2p5:
 
 system:
   with_loop_closing: true # 是否需要回环检测
-  with_ui: true # 是否需要3D UI
+  with_ui: false # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
   with_g2p5: true # 是否需要栅格地图
   step_on_kf: false # 是否在关键帧处暂停
@@ -63,18 +63,247 @@ system:
   enable_lidar_loc_rviz: false
   enable_lidar_odom_skip: false
   evaluation: false
+  evaluation_output_dir: ./data/evaluation
   lidar_loc_skip_num: 4
   lidar_odom_skip_num: 2
   map_path: ./data/new_map/
   pub_tf: true
 
+health_check:
+  enable: true
+  check_period_sec: 1.0
+  warn_period_sec: 5.0
+  startup_grace_sec: 2.0
+  info_period_sec: 5.0
+
+  input_health_log:
+    enable: true
+    csv_enable: true
+    jsonl_enable: true
+    summary_enable: true
+    output_dir: "data/loc_reports"
+    event_output_dir: "data/loc_health"
+    flush_every_n: 1
+    log_every_n: 1
+    keep_recent_window_sec: 30.0
+    write_fault_window_on_event: true
+    fault_window_pre_sec: 10.0
+    fault_window_post_sec: 10.0
+
+  imu:
+    min_hz: 100.0
+    max_age_sec: 0.10
+    max_gap_sec: 0.05
+    max_delay_sec: 0.10
+
+  lidar:
+    min_hz: 5.0
+    max_age_sec: 0.60
+    max_gap_sec: 0.30
+    max_delay_sec: 0.60
+    min_points: 1000
+
+  odom:
+    topic: "/odom"
+    min_hz: 20.0
+    max_age_sec: 0.15
+    max_gap_sec: 0.20
+    max_delay_sec: 0.15
+
+  tf:
+    odom_base_max_age_sec: 0.05
+    lookup_timeout_sec: 0.02
+    max_lookup_dt_sec: 0.05
+
+lio_guess_diagnostics:
+  enable: true
+  csv_enable: true
+  jsonl_enable: true
+  summary_enable: true
+  output_dir: "data/loc_reports"
+  event_output_dir: "data/loc_health"
+  flush_every_n: 1
+  log_every_n: 1
+
+  vehicle_max_speed_mps: 4.0
+  trans_warn_factor: 1.3
+  trans_error_factor: 1.8
+  min_trans_warn_m: 0.15
+  min_trans_error_m: 0.25
+
+  yaw_rate_warn_degps: 90.0
+  yaw_rate_error_degps: 150.0
+  min_yaw_warn_deg: 3.0
+  min_yaw_error_deg: 6.0
+
+  compare_with_chassis_odom: true
+  lio_odom_delta_warn_m: 0.20
+  lio_odom_delta_error_m: 0.40
+  lio_odom_yaw_warn_deg: 3.0
+  lio_odom_yaw_error_deg: 6.0
+
+  guess_to_ndt_warn_m: 0.30
+  guess_to_ndt_error_m: 0.60
+  guess_to_ndt_yaw_warn_deg: 5.0
+  guess_to_ndt_yaw_error_deg: 10.0
+
+  suspect_confirm_frames: 2
+  error_confirm_frames: 2
+
+  keep_recent_window_sec: 30.0
+  write_fault_window_on_event: true
+  fault_window_pre_sec: 10.0
+  fault_window_post_sec: 10.0
+
+odom_base_diagnostics:
+  enable: true
+  csv_enable: true
+  jsonl_enable: true
+  summary_enable: true
+  output_dir: "data/loc_reports"
+  event_output_dir: "data/loc_health"
+  flush_every_n: 1
+  log_every_n: 1
+
+  vehicle_max_speed_mps: 4.0
+  trans_warn_factor: 1.3
+  trans_error_factor: 1.8
+  min_trans_warn_m: 0.12
+  min_trans_error_m: 0.25
+
+  yaw_rate_warn_degps: 90.0
+  yaw_rate_error_degps: 150.0
+  min_yaw_warn_deg: 3.0
+  min_yaw_error_deg: 6.0
+
+  odom_min_hz: 20.0
+  odom_max_age_sec: 0.15
+  odom_max_gap_sec: 0.20
+  tf_lookup_timeout_sec: 0.02
+  tf_max_dt_sec: 0.05
+  tf_max_age_sec: 0.05
+
+  source_switch_warn_count: 5
+  source_switch_window_sec: 10.0
+  source_switch_error_count: 20
+
+  stationary_enable: true
+  stationary_speed_mps: 0.05
+  stationary_trans_warn_m: 0.03
+  stationary_trans_error_m: 0.08
+  stationary_yaw_warn_deg: 1.0
+  stationary_yaw_error_deg: 3.0
+
+  compare_with_lio: true
+  compare_with_map_odom: true
+  compare_with_final_pose: true
+  odom_lio_delta_warn_m: 0.20
+  odom_lio_delta_error_m: 0.40
+  odom_lio_yaw_warn_deg: 3.0
+  odom_lio_yaw_error_deg: 6.0
+
+  keep_recent_window_sec: 30.0
+  write_fault_window_on_event: true
+  fault_window_pre_sec: 10.0
+  fault_window_post_sec: 10.0
+
 loop_closing:
   loop_kf_gap: 20       # 每隔多少个关键帧检查一次
-  min_id_interval: 20   # 被检查的关键帧ID间隔
-  closest_id_th: 50     # 历史关键帧与当前帧的ID间隔
-  max_range: 20.0       # 候选帧的最大距离
-  ndt_score_th: 1.3     # ndt位姿分值
+  min_id_interval: 60   # 被检查的关键帧ID间隔
+  closest_id_th: 100     # 历史关键帧与当前帧的ID间隔
+  max_range: 12.0       # 候选帧的最大距离
+  ndt_score_th: 2.2     # ndt位姿分值
+  lidar_auto_ndt_inlier_gate:
+    enable: false                  # 是否用 NDT 后 source 点云 inlier ratio 作为硬门控
+    max_inlier_distance_m: 0.5      # source 点变换到世界系后，距历史 target 最近点小于该值则记为 inlier
+    min_inlier_ratio: 0.35          # inlier/source 有效点比例低于该值时拒绝；enable=false 时仅写日志
   with_height: false
+  height_noise: 0.1
+  debug_log_enable: false
+  debug_log_dir: ""
+  debug_log_candidates: true
+  debug_log_matches: true
+  debug_log_gate_decisions: true
+  debug_log_pgo_impact: true
+  debug_flush_every_n: 1
+  debug_max_suspects: 100
+  debug_save_figures: true
+  debug_save_submap_preview: false
+  debug_loop_alignment_live_enable: false       # 是否在回环 NDT 匹配时实时导出匹配前/后点云图数据
+  debug_loop_alignment_live_dir: "loop_alignment_live" # 输出到 loop_debug 下的子目录
+  debug_loop_alignment_live_max_points: 60000   # 每个候选用于绘图的最多点数，超出则均匀抽样
+  debug_loop_alignment_live_save_points: true   # 保存绘图点集 CSV，供脚本生成 PNG
+  debug_loop_alignment_live_save_png: true      # run_slam_offline_mid360.sh 是否启动 PNG 实时绘制
+  debug_loop_alignment_live_max_events: 0       # 最多导出候选数，0 表示不限制
+  rk_loop_th: 1.04
+  lidar_auto_pgo_trial_commit:
+    enable: true
+  # 原始 LiDAR 帧短窗累积 source 配置；默认关闭，保持旧的单关键帧 NDT source 行为。
+  source_scan_accum_enable: false          # 是否启用原始 LiDAR 帧短窗累积作为 NDT source
+  source_scan_accum_max_scans: 5           # 最多累积原始 LiDAR 帧数，建议 3~5
+  source_scan_accum_min_scans: 3           # 至少需要多少帧才使用累积 source
+  source_scan_accum_time_sec: 0.5          # 最大时间窗，10Hz 下 0.5s 约 5 帧
+  source_scan_accum_ref: "current"         # current 表示统一到当前 LiDAR 帧坐标系
+  source_scan_accum_pose_type: "LIO"       # LIO | OPT | ODOM，第一版优先 LIO
+  source_scan_accum_max_trans_m: 1.2       # 短窗内最大平移跨度，超过则 fallback
+  source_scan_accum_max_yaw_deg: 8.0       # 短窗内最大 yaw 跨度，超过则 fallback
+  source_scan_accum_voxel_leaf_m: 0.10     # 累积 source 的降采样叶子大小
+  source_scan_accum_max_points: 30000      # 累积 source 降采样后的最大点数
+  source_scan_accum_min_points: 3000       # 累积 source 降采样后的最小点数，过少则 fallback
+  source_scan_accum_max_yaw_rate_degps: 30.0 # 短窗最大 yaw 角速度，过大则 fallback
+  source_scan_accum_max_trans_rate_mps: 2.5 # 短窗最大平移速度，过大则 fallback
+  source_scan_accum_require_monotonic_stamp: true # 要求短窗内时间戳单调，否则 fallback
+  source_scan_accum_fallback_single: true  # 累积失败时回退旧单帧 source
+  source_scan_accum_debug_enable: false    # 是否输出 source 累积调试 CSV
+  source_scan_accum_debug_csv: "loop_source_scan_accum_debug.csv" # source 累积调试 CSV 文件名
+  lidar_auto_source_accumulation:
+    enable: false
+    frame_count: 3
+    min_frames: 2
+    max_time_span_sec: 1.0
+    voxel_leaf_size_m: 0.0
+    debug_log: false
+  lidar_auto_pgo_impact_gate:
+    enable: false
+    max_pose_delta_near_loop_m: 3.0
+    max_local_straightness_delta_m: 3.0
+    max_affected_kf_count: 120
+    apply_to_auto_lidar_loop_only: true
+  lidar_auto_adjacent_pose_gate:
+    enable: true
+    reject_on_violation: true
+    scope: "between_loop"
+    max_pair_id_gap: 5
+    min_pair_count: 5
+    max_adjacent_rel_delta_xy_m: 0.35
+    max_adjacent_rel_delta_yaw_deg: 5.0
+    p95_adjacent_rel_delta_xy_m: 0.15
+    p95_adjacent_rel_delta_yaw_deg: 2.5
+    log_top_k: 5
+    shape_deformation_enable: true
+    shape_deformation_reject_on_violation: false
+    shape_align_mode: "se2_umeyama_no_scale"
+    shape_scope: "near_loop"
+    shape_min_pose_count: 20
+    shape_min_path_length_m: 20.0
+    shape_endpoint_radius_m: 60.0
+    shape_local_window_path_m: 30.0
+    shape_local_window_stride_m: 10.0
+    shape_max_windows_per_endpoint: 8
+    max_shape_delta_p95_m: 0.35
+    max_shape_delta_max_m: 0.80
+    max_shape_delta_mean_m: 0.20
+  lidar_auto_risk_combo_gate:
+    enable: false
+    reject_low_score_margin_and_large_correction: true
+    reject_low_score_margin_and_near_max_range: true
+    reject_low_score_margin_and_local_pose_delta_large: true
+    reject_large_correction_and_near_max_range: true
+    low_score_margin_th: 0.3
+    near_max_range_ratio: 0.8
+    large_correction_trans_m: 0.8
+    large_correction_yaw_deg: 10.0
+    local_pose_delta_large_m: 0.3
 
 
 ### localization ================================================================================================
@@ -82,10 +311,10 @@ lidar_loc:
   enable_dynamic_polygon: false
   enable_parking_static: true
   enable_icp_adjust: false
-  filter_intensity_max: 100.0
+  filter_intensity_max: 250.0
   filter_intensity_min: 10.0
-  filter_z_max: 30.0
-  filter_z_min: -1.0
+  filter_z_max: 18
+  filter_z_min: -3
   force_2d: false
   grid_search_angle_range: 180.0
   grid_search_angle_step: 60
@@ -102,10 +331,10 @@ lidar_loc:
 maps:
   delete_when_unload: false
   dyn_cloud_policy: persistent
-  load_dyn_cloud: true
+  load_dyn_cloud: false
   load_map_size: 2
   max_pts_dyn_chunk: 100000
-  save_dyn_when_quit: true
+  save_dyn_when_quit: false
   save_dyn_when_unload: false
   unload_map_size: 4
   with_dyn_area: false
@@ -128,8 +357,8 @@ pgo:
   rtk_outlier_th: 1.0
   smooth_factor: 0.01
 roi:
-  height_max: 10.0
-  height_min: 0.5
+  height_max: 15
+  height_min: -1.8 #激光雷达的高度数据范围，过高或过低的点云数据不予处理
   range_max: 70
   range_min: 3.0
 ui:

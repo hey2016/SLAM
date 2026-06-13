@@ -10,6 +10,8 @@
 #include "common/point_def.h"
 #include "common/std_types.h"
 
+#include <vector>
+
 namespace lightning {
 
 /// 关键帧描述
@@ -17,6 +19,12 @@ namespace lightning {
 class Keyframe {
    public:
     using Ptr = std::shared_ptr<Keyframe>;
+
+    struct SourceScanFrame {
+        CloudPtr cloud = nullptr;  // undistorted source scan in this frame's body/LiDAR coordinates
+        SE3 pose;                  // LIO pose of this source scan in world coordinates
+        double stamp = 0.0;
+    };
 
     Keyframe() {}
     Keyframe(unsigned long id, CloudPtr cloud, NavState state)
@@ -27,6 +35,16 @@ class Keyframe {
 
     unsigned long GetID() const { return id_; }
     CloudPtr GetCloud() const { return cloud_; }
+
+    void SetSourceScanFrames(const std::vector<SourceScanFrame>& frames) {
+        UL lock(data_mutex_);
+        source_scan_frames_ = frames;
+    }
+
+    std::vector<SourceScanFrame> GetSourceScanFrames() {
+        UL lock(data_mutex_);
+        return source_scan_frames_;
+    }
 
     SE3 GetLIOPose() {
         UL lock(data_mutex_);
@@ -66,6 +84,7 @@ class Keyframe {
 
     double timestamp_ = 0;
     CloudPtr cloud_ = nullptr;  /// 降采样之后的点云
+    std::vector<SourceScanFrame> source_scan_frames_;
 
     std::mutex data_mutex_;
     SE3 pose_lio_;  // 前端的pose

@@ -1,10 +1,16 @@
 #include <pcl/common/transforms.h>
 #include <yaml-cpp/yaml.h>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 #include "common/options.h"
 #include "core/lightning_math.hpp"
 #include "laser_mapping.h"
+#include "utils/pointcloud_utils.h"
 
 #include <opencv2/core/mat.hpp>
 #include <opencv2/highgui.hpp>
@@ -14,6 +20,41 @@
 #include "wrapper/ros_utils.h"
 
 namespace lightning {
+namespace {
+
+constexpr double kRadToDeg = 180.0 / M_PI;
+constexpr double kCurrentScanStampToleranceSec = 1e-3;
+
+template <typename T>
+T YamlGetOr(const YAML::Node& node, const std::string& key, const T& fallback) {
+    if (!node || !node[key]) return fallback;
+    try {
+        return node[key].as<T>();
+    } catch (...) {
+        return fallback;
+    }
+}
+
+double NormalizeYawDeg(double yaw) {
+    while (yaw > 180.0) yaw -= 360.0;
+    while (yaw < -180.0) yaw += 360.0;
+    return yaw;
+}
+
+double HeadingYawDeg(const SE3& pose) {
+    const auto R = pose.so3().matrix();
+    return std::atan2(R(1, 0), R(0, 0)) * kRadToDeg;
+}
+
+double HeadingYawDiffDeg(const SE3& a, const SE3& b) {
+    return NormalizeYawDeg(HeadingYawDeg(a) - HeadingYawDeg(b));
+}
+
+bool PoseIsFinite(const SE3& pose) {
+    return pose.matrix().allFinite();
+}
+
+}  // namespace
 
 bool LaserMapping::Init(const std::string &config_yaml) {
     LOG(INFO) << "init laser mapping from " << config_yaml;
@@ -84,9 +125,127 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         p_imu_->SetUseIMUFilter(use_imu_filter);
         options_.proj_kfs_ = yaml["fasterlio"]["proj_kfs"].as<bool>();
 
+        const auto source_accum = yaml["loop_closing"]["lidar_auto_source_accumulation"];
+        options_.loop_source_accum_enable_ =
+            YamlGetOr<bool>(source_accum, "enable", options_.loop_source_accum_enable_);
+        options_.loop_source_accum_frame_count_ =
+            YamlGetOr<int>(source_accum, "frame_count", options_.loop_source_accum_frame_count_);
+        options_.loop_source_accum_min_frames_ =
+            YamlGetOr<int>(source_accum, "min_frames", options_.loop_source_accum_min_frames_);
+        options_.loop_source_accum_max_time_span_sec_ =
+            YamlGetOr<double>(source_accum, "max_time_span_sec", options_.loop_source_accum_max_time_span_sec_);
+        const auto loop = yaml["loop_closing"];
+        options_.source_scan_accum_enable_ =
+            YamlGetOr<bool>(loop, "source_scan_accum_enable", options_.source_scan_accum_enable_);
+        options_.source_scan_accum_max_scans_ =
+            YamlGetOr<int>(loop, "source_scan_accum_max_scans", options_.source_scan_accum_max_scans_);
+        options_.source_scan_accum_min_scans_ =
+            YamlGetOr<int>(loop, "source_scan_accum_min_scans", options_.source_scan_accum_min_scans_);
+        options_.source_scan_accum_time_sec_ =
+            YamlGetOr<double>(loop, "source_scan_accum_time_sec", options_.source_scan_accum_time_sec_);
+        options_.source_scan_accum_max_trans_m_ =
+            YamlGetOr<double>(loop, "source_scan_accum_max_trans_m", options_.source_scan_accum_max_trans_m_);
+        options_.source_scan_accum_max_yaw_deg_ =
+            YamlGetOr<double>(loop, "source_scan_accum_max_yaw_deg", options_.source_scan_accum_max_yaw_deg_);
+        options_.source_scan_accum_voxel_leaf_m_ =
+            YamlGetOr<double>(loop, "source_scan_accum_voxel_leaf_m", options_.source_scan_accum_voxel_leaf_m_);
+        options_.source_scan_accum_max_points_ =
+            YamlGetOr<int>(loop, "source_scan_accum_max_points", options_.source_scan_accum_max_points_);
+        options_.source_scan_accum_min_points_ =
+            YamlGetOr<int>(loop, "source_scan_accum_min_points", options_.source_scan_accum_min_points_);
+        options_.source_scan_accum_max_yaw_rate_degps_ =
+            YamlGetOr<double>(loop, "source_scan_accum_max_yaw_rate_degps",
+                              options_.source_scan_accum_max_yaw_rate_degps_);
+        options_.source_scan_accum_max_trans_rate_mps_ =
+            YamlGetOr<double>(loop, "source_scan_accum_max_trans_rate_mps",
+                              options_.source_scan_accum_max_trans_rate_mps_);
+        options_.source_scan_accum_require_monotonic_stamp_ =
+            YamlGetOr<bool>(loop, "source_scan_accum_require_monotonic_stamp",
+                            options_.source_scan_accum_require_monotonic_stamp_);
+        options_.source_scan_accum_debug_enable_ =
+            YamlGetOr<bool>(loop, "source_scan_accum_debug_enable", options_.source_scan_accum_debug_enable_);
+
     } catch (...) {
         LOG(ERROR) << "bad conversion";
         return false;
+    }
+
+    if (options_.loop_source_accum_frame_count_ < 3 || options_.loop_source_accum_frame_count_ > 5) {
+        LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.frame_count="
+                     << options_.loop_source_accum_frame_count_ << ", clamp to [3,5]";
+        options_.loop_source_accum_frame_count_ =
+            std::min(5, std::max(3, options_.loop_source_accum_frame_count_));
+    }
+    if (options_.loop_source_accum_min_frames_ < 1 ||
+        options_.loop_source_accum_min_frames_ > options_.loop_source_accum_frame_count_) {
+        LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.min_frames="
+                     << options_.loop_source_accum_min_frames_ << ", fallback to "
+                     << std::min(2, options_.loop_source_accum_frame_count_);
+        options_.loop_source_accum_min_frames_ = std::min(2, options_.loop_source_accum_frame_count_);
+    }
+    if (!std::isfinite(options_.loop_source_accum_max_time_span_sec_) ||
+        options_.loop_source_accum_max_time_span_sec_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.max_time_span_sec="
+                     << options_.loop_source_accum_max_time_span_sec_ << ", fallback to 1.0";
+        options_.loop_source_accum_max_time_span_sec_ = 1.0;
+    }
+    if (options_.source_scan_accum_max_scans_ < 1 || options_.source_scan_accum_max_scans_ > 20) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_scans="
+                     << options_.source_scan_accum_max_scans_ << ", clamp to [1,20]";
+        options_.source_scan_accum_max_scans_ =
+            std::min(20, std::max(1, options_.source_scan_accum_max_scans_));
+    }
+    if (options_.source_scan_accum_min_scans_ < 1 ||
+        options_.source_scan_accum_min_scans_ > options_.source_scan_accum_max_scans_) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_min_scans="
+                     << options_.source_scan_accum_min_scans_ << ", fallback to "
+                     << std::min(3, options_.source_scan_accum_max_scans_);
+        options_.source_scan_accum_min_scans_ = std::min(3, options_.source_scan_accum_max_scans_);
+    }
+    if (!std::isfinite(options_.source_scan_accum_time_sec_) || options_.source_scan_accum_time_sec_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_time_sec="
+                     << options_.source_scan_accum_time_sec_ << ", fallback to 0.5";
+        options_.source_scan_accum_time_sec_ = 0.5;
+    }
+    if (!std::isfinite(options_.source_scan_accum_max_trans_m_) ||
+        options_.source_scan_accum_max_trans_m_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_trans_m="
+                     << options_.source_scan_accum_max_trans_m_ << ", fallback to 1.2";
+        options_.source_scan_accum_max_trans_m_ = 1.2;
+    }
+    if (!std::isfinite(options_.source_scan_accum_max_yaw_deg_) ||
+        options_.source_scan_accum_max_yaw_deg_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_yaw_deg="
+                     << options_.source_scan_accum_max_yaw_deg_ << ", fallback to 8.0";
+        options_.source_scan_accum_max_yaw_deg_ = 8.0;
+    }
+    if (!std::isfinite(options_.source_scan_accum_voxel_leaf_m_) ||
+        options_.source_scan_accum_voxel_leaf_m_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_voxel_leaf_m="
+                     << options_.source_scan_accum_voxel_leaf_m_ << ", fallback to 0.10";
+        options_.source_scan_accum_voxel_leaf_m_ = 0.10;
+    }
+    if (options_.source_scan_accum_max_points_ < 1) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_points="
+                     << options_.source_scan_accum_max_points_ << ", fallback to 30000";
+        options_.source_scan_accum_max_points_ = 30000;
+    }
+    if (options_.source_scan_accum_min_points_ < 0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_min_points="
+                     << options_.source_scan_accum_min_points_ << ", fallback to 3000";
+        options_.source_scan_accum_min_points_ = 3000;
+    }
+    if (!std::isfinite(options_.source_scan_accum_max_yaw_rate_degps_) ||
+        options_.source_scan_accum_max_yaw_rate_degps_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_yaw_rate_degps="
+                     << options_.source_scan_accum_max_yaw_rate_degps_ << ", fallback to 30.0";
+        options_.source_scan_accum_max_yaw_rate_degps_ = 30.0;
+    }
+    if (!std::isfinite(options_.source_scan_accum_max_trans_rate_mps_) ||
+        options_.source_scan_accum_max_trans_rate_mps_ < 0.0) {
+        LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_trans_rate_mps="
+                     << options_.source_scan_accum_max_trans_rate_mps_ << ", fallback to 2.5";
+        options_.source_scan_accum_max_trans_rate_mps_ = 2.5;
     }
 
     LOG(INFO) << "lidar_type " << lidar_type;
@@ -130,6 +289,23 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     p_imu_->SetAccCov(Vec3d(acc_cov, acc_cov, acc_cov));
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu_->SetAccBiasCov(Vec3d(b_acc_cov, b_acc_cov, b_acc_cov));
+    LOG(INFO) << "loop source accumulation params: enable=" << options_.loop_source_accum_enable_
+              << ", frame_count=" << options_.loop_source_accum_frame_count_
+              << ", min_frames=" << options_.loop_source_accum_min_frames_
+              << ", max_time_span_sec=" << options_.loop_source_accum_max_time_span_sec_;
+    LOG(INFO) << "source scan cache params: enable=" << options_.source_scan_accum_enable_
+              << ", max_scans=" << options_.source_scan_accum_max_scans_
+              << ", min_scans=" << options_.source_scan_accum_min_scans_
+              << ", time_sec=" << options_.source_scan_accum_time_sec_
+              << ", max_trans_m=" << options_.source_scan_accum_max_trans_m_
+              << ", max_yaw_deg=" << options_.source_scan_accum_max_yaw_deg_
+              << ", voxel_leaf_m=" << options_.source_scan_accum_voxel_leaf_m_
+              << ", max_points=" << options_.source_scan_accum_max_points_
+              << ", min_points=" << options_.source_scan_accum_min_points_
+              << ", max_yaw_rate_degps=" << options_.source_scan_accum_max_yaw_rate_degps_
+              << ", max_trans_rate_mps=" << options_.source_scan_accum_max_trans_rate_mps_
+              << ", require_monotonic_stamp=" << options_.source_scan_accum_require_monotonic_stamp_
+              << ", debug_enable=" << options_.source_scan_accum_debug_enable_;
     return true;
 }
 
@@ -268,6 +444,8 @@ bool LaserMapping::Run() {
 
     state_point_ = kf_.GetX();
     state_point_.timestamp_ = measures_.lidar_end_time_;
+    CacheLoopSourceScanFrame();
+    CacheSourceScanForLoopClosing();
 
     const double delta_translation = (pred_state.pos_ - state_point_.pos_).norm();
     const double delta_rotation_deg = (pred_state.rot_.inverse() * state_point_.rot_).log().norm() * 180.0 / M_PI;
@@ -363,6 +541,11 @@ void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
 
 void LaserMapping::MakeKF() {
     Keyframe::Ptr kf = std::make_shared<Keyframe>(kf_id_++, scan_undistort_, state_point_);
+    if (options_.loop_source_accum_enable_ &&
+        static_cast<int>(loop_source_scan_history_.size()) >= options_.loop_source_accum_min_frames_) {
+        std::vector<Keyframe::SourceScanFrame> frames(loop_source_scan_history_.begin(), loop_source_scan_history_.end());
+        kf->SetSourceScanFrames(frames);
+    }
 
     if (last_kf_) {
         /// opt pose 用之前的递推
@@ -409,7 +592,383 @@ void LaserMapping::MakeKF() {
     // }
 }
 
-void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+void LaserMapping::CacheLoopSourceScanFrame() {
+    if (!options_.loop_source_accum_enable_) {
+        return;
+    }
+    if (!scan_undistort_ || scan_undistort_->empty()) {
+        return;
+    }
+
+    Keyframe::SourceScanFrame frame;
+    frame.cloud.reset(new PointCloudType(*scan_undistort_));
+    frame.pose = state_point_.GetPose();
+    frame.stamp = state_point_.timestamp_;
+    loop_source_scan_history_.push_back(frame);
+
+    while (static_cast<int>(loop_source_scan_history_.size()) > options_.loop_source_accum_frame_count_) {
+        loop_source_scan_history_.pop_front();
+    }
+    if (options_.loop_source_accum_max_time_span_sec_ > 0.0) {
+        while (!loop_source_scan_history_.empty() &&
+               frame.stamp - loop_source_scan_history_.front().stamp >
+                   options_.loop_source_accum_max_time_span_sec_) {
+            loop_source_scan_history_.pop_front();
+        }
+    }
+}
+
+std::vector<LaserMapping::RawScanCacheItem> LaserMapping::GetSourceScanCacheSnapshot() const {
+    std::lock_guard<std::mutex> lock(source_scan_cache_mutex_);
+    return std::vector<RawScanCacheItem>(source_scan_cache_.begin(), source_scan_cache_.end());
+}
+
+bool LaserMapping::BuildSourceScanAccumCandidate(double curr_stamp_sec, const SE3& T_w_curr,
+                                                  const Options& options,
+                                                  SourceScanAccumSelection* out) const {
+    return SelectSourceScanAccumCandidateFromCache(GetSourceScanCacheSnapshot(), curr_stamp_sec, T_w_curr, options, out);
+}
+
+bool LaserMapping::SelectSourceScanAccumCandidateFromCache(const std::vector<RawScanCacheItem>& cache,
+                                                           double curr_stamp_sec,
+                                                           const SE3& T_w_curr,
+                                                           const Options& options,
+                                                           SourceScanAccumSelection* out) {
+    if (!out) {
+        return false;
+    }
+
+    *out = SourceScanAccumSelection();
+    out->curr_stamp_sec = curr_stamp_sec;
+
+    try {
+        if (!std::isfinite(curr_stamp_sec) || !PoseIsFinite(T_w_curr)) {
+            out->reason = "ACCUM_NO_VALID_POSE";
+            return false;
+        }
+
+        const int max_scans = std::max(1, std::min(20, options.source_scan_accum_max_scans_));
+        const int min_scans = std::max(1, std::min(options.source_scan_accum_min_scans_, max_scans));
+        const double max_time_sec = std::max(0.0, options.source_scan_accum_time_sec_);
+        const double max_trans_m = std::max(0.0, options.source_scan_accum_max_trans_m_);
+        const double max_yaw_deg = std::max(0.0, options.source_scan_accum_max_yaw_deg_);
+        const double max_trans_rate_mps = std::max(0.0, options.source_scan_accum_max_trans_rate_mps_);
+        const double max_yaw_rate_degps = std::max(0.0, options.source_scan_accum_max_yaw_rate_degps_);
+
+        std::vector<RawScanCacheItem> valid_before_curr;
+        std::vector<RawScanCacheItem> window;
+        valid_before_curr.reserve(cache.size());
+        window.reserve(cache.size());
+        bool have_last_window_stamp = false;
+        double last_window_stamp = 0.0;
+
+        for (const auto& item : cache) {
+            if (!std::isfinite(item.stamp_sec) || item.stamp_sec > curr_stamp_sec + kCurrentScanStampToleranceSec) {
+                continue;
+            }
+            if (!item.has_lio_pose || !item.cloud_lidar || !PoseIsFinite(item.pose_lio_lidar_in_world)) {
+                continue;
+            }
+
+            valid_before_curr.push_back(item);
+            const double dt = curr_stamp_sec - item.stamp_sec;
+            if (dt < -kCurrentScanStampToleranceSec) {
+                continue;
+            }
+            if (max_time_sec > 0.0 && dt > max_time_sec + kCurrentScanStampToleranceSec) {
+                continue;
+            }
+            if (options.source_scan_accum_require_monotonic_stamp_ && have_last_window_stamp &&
+                item.stamp_sec + kCurrentScanStampToleranceSec < last_window_stamp) {
+                out->reason = "ACCUM_STAMP_NON_MONOTONIC";
+                return false;
+            }
+            have_last_window_stamp = true;
+            last_window_stamp = item.stamp_sec;
+            window.push_back(item);
+        }
+
+        if (valid_before_curr.empty()) {
+            out->reason = "ACCUM_NO_VALID_POSE";
+            return false;
+        }
+        if (window.empty()) {
+            out->reason = "ACCUM_TIME_GAP_TOO_LARGE";
+            return false;
+        }
+
+        auto by_time_seq = [](const RawScanCacheItem& a, const RawScanCacheItem& b) {
+            if (a.stamp_sec == b.stamp_sec) {
+                return a.seq < b.seq;
+            }
+            return a.stamp_sec < b.stamp_sec;
+        };
+        std::sort(window.begin(), window.end(), by_time_seq);
+
+        const bool has_current_scan = std::any_of(window.begin(), window.end(), [&](const RawScanCacheItem& item) {
+            return std::fabs(item.stamp_sec - curr_stamp_sec) <= kCurrentScanStampToleranceSec;
+        });
+        if (!has_current_scan) {
+            out->reason = "ACCUM_TIME_GAP_TOO_LARGE";
+            return false;
+        }
+
+        if (static_cast<int>(window.size()) > max_scans) {
+            window.erase(window.begin(), window.end() - max_scans);
+        }
+
+        out->frames.reserve(window.size());
+        for (const auto& item : window) {
+            SourceScanAccumSelectedFrame frame;
+            frame.seq = item.seq;
+            frame.stamp_sec = item.stamp_sec;
+            frame.dt_to_curr_sec = curr_stamp_sec - item.stamp_sec;
+            const SE3 T_curr_item = T_w_curr.inverse() * item.pose_lio_lidar_in_world;
+            frame.trans_to_curr_m = T_curr_item.translation().norm();
+            frame.yaw_to_curr_deg = std::fabs(HeadingYawDiffDeg(item.pose_lio_lidar_in_world, T_w_curr));
+            frame.cloud_lidar = item.cloud_lidar;
+            frame.pose_lio_lidar_in_world = item.pose_lio_lidar_in_world;
+            out->frames.push_back(frame);
+        }
+
+        out->selected_count = static_cast<int>(out->frames.size());
+        if (!out->frames.empty()) {
+            out->time_span_sec = out->frames.back().stamp_sec - out->frames.front().stamp_sec;
+            out->trans_span_m = out->frames.front().trans_to_curr_m;
+            out->yaw_span_deg = out->frames.front().yaw_to_curr_deg;
+            if (out->time_span_sec > kCurrentScanStampToleranceSec) {
+                out->trans_rate_mps = out->trans_span_m / out->time_span_sec;
+                out->yaw_rate_degps = out->yaw_span_deg / out->time_span_sec;
+            } else {
+                out->trans_rate_mps = out->trans_span_m > 1e-6 ? std::numeric_limits<double>::infinity() : 0.0;
+                out->yaw_rate_degps = out->yaw_span_deg > 1e-6 ? std::numeric_limits<double>::infinity() : 0.0;
+            }
+        }
+
+        if (out->selected_count < min_scans) {
+            out->reason = "ACCUM_TOO_FEW_SCANS";
+            return false;
+        }
+        if (out->trans_span_m > max_trans_m) {
+            out->reason = "ACCUM_TRANS_TOO_LARGE";
+            return false;
+        }
+        if (out->yaw_span_deg > max_yaw_deg) {
+            out->reason = "ACCUM_YAW_TOO_LARGE";
+            return false;
+        }
+        if (out->trans_rate_mps > max_trans_rate_mps) {
+            out->reason = "ACCUM_TRANS_RATE_TOO_LARGE";
+            return false;
+        }
+        if (out->yaw_rate_degps > max_yaw_rate_degps) {
+            out->reason = "ACCUM_YAW_RATE_TOO_LARGE";
+            return false;
+        }
+
+        out->valid = true;
+        out->reason = "ACCUM_OK";
+        return true;
+    } catch (const std::exception&) {
+        out->valid = false;
+        out->reason = "ACCUM_NO_VALID_POSE";
+        return false;
+    } catch (...) {
+        out->valid = false;
+        out->reason = "ACCUM_NO_VALID_POSE";
+        return false;
+    }
+}
+
+bool LaserMapping::BuildSourceScanAccumCloud(double curr_stamp_sec, const SE3& T_w_curr,
+                                             const Options& options,
+                                             SourceScanAccumCloudResult* out) const {
+    if (!out) {
+        return false;
+    }
+    *out = SourceScanAccumCloudResult();
+
+    SourceScanAccumSelection selection;
+    if (!BuildSourceScanAccumCandidate(curr_stamp_sec, T_w_curr, options, &selection)) {
+        out->selection = selection;
+        out->scan_count = selection.selected_count;
+        out->time_span_sec = selection.time_span_sec;
+        out->fallback_reason = selection.reason;
+        return false;
+    }
+    return BuildSourceScanAccumCloudFromSelection(selection, T_w_curr, options, out);
+}
+
+bool LaserMapping::BuildSourceScanAccumCloudFromSelection(const SourceScanAccumSelection& selection,
+                                                          const SE3& T_w_curr,
+                                                          const Options& options,
+                                                          SourceScanAccumCloudResult* out) {
+    if (!out) {
+        return false;
+    }
+    *out = SourceScanAccumCloudResult();
+    out->selection = selection;
+    out->scan_count = selection.selected_count;
+    out->time_span_sec = selection.time_span_sec;
+
+    if (!selection.valid) {
+        out->fallback_reason = selection.reason.empty() ? "ACCUM_TOO_FEW_SCANS" : selection.reason;
+        return false;
+    }
+    try {
+        CloudPtr accumulated(new PointCloudType);
+        for (const auto& frame : selection.frames) {
+            if (!frame.cloud_lidar || frame.cloud_lidar->empty()) {
+                continue;
+            }
+            out->points_before_downsample += static_cast<long>(frame.cloud_lidar->size());
+            const SE3 T_curr_frame = T_w_curr.inverse() * frame.pose_lio_lidar_in_world;
+            CloudPtr cloud_trans(new PointCloudType);
+            pcl::transformPointCloud(*frame.cloud_lidar, *cloud_trans, T_curr_frame.matrix());
+            *accumulated += *cloud_trans;
+        }
+
+        if (!accumulated || accumulated->empty()) {
+            out->fallback_reason = "ACCUM_EMPTY_CLOUD";
+            return false;
+        }
+
+        if (options.source_scan_accum_voxel_leaf_m_ > 0.0) {
+            accumulated = VoxelGrid(accumulated, static_cast<float>(options.source_scan_accum_voxel_leaf_m_));
+            if (!accumulated || accumulated->empty()) {
+                out->fallback_reason = "ACCUM_VOXEL_EMPTY";
+                return false;
+            }
+        }
+
+        if (options.source_scan_accum_max_points_ > 0 &&
+            static_cast<int>(accumulated->size()) > options.source_scan_accum_max_points_) {
+            CloudPtr capped(new PointCloudType);
+            capped->reserve(static_cast<size_t>(options.source_scan_accum_max_points_));
+            const size_t total = accumulated->size();
+            const size_t keep = static_cast<size_t>(options.source_scan_accum_max_points_);
+            for (size_t i = 0; i < keep; ++i) {
+                const size_t index = std::min(total - 1, i * total / keep);
+                capped->push_back(accumulated->points[index]);
+            }
+            accumulated = capped;
+        }
+
+        accumulated->is_dense = false;
+        accumulated->height = 1;
+        accumulated->width = static_cast<uint32_t>(accumulated->size());
+
+        out->cloud_lidar = accumulated;
+        out->points_after_downsample = static_cast<long>(accumulated->size());
+        if (out->points_after_downsample < options.source_scan_accum_min_points_) {
+            out->fallback_reason = "ACCUM_TOO_FEW_POINTS";
+            out->cloud_lidar.reset();
+            return false;
+        }
+
+        out->success = true;
+        out->fallback_reason.clear();
+        return true;
+    } catch (const std::exception& e) {
+        out->fallback_reason = std::string("ACCUM_BUILD_EXCEPTION:") + e.what();
+        return false;
+    } catch (...) {
+        out->fallback_reason = "ACCUM_BUILD_EXCEPTION";
+        return false;
+    }
+}
+
+bool LaserMapping::BuildSourceScanAccumCloud(double curr_stamp_sec, const SE3& T_w_curr,
+                                             SourceScanAccumCloudResult* out) const {
+    return BuildSourceScanAccumCloud(curr_stamp_sec, T_w_curr, options_, out);
+}
+
+void LaserMapping::CacheSourceScanForLoopClosing() {
+    if (!options_.source_scan_accum_enable_) {
+        return;
+    }
+    if (!scan_undistort_ || scan_undistort_->empty()) {
+        return;
+    }
+    if (!p_imu_ || !p_imu_->IsIMUInited()) {
+        return;
+    }
+    if (!std::isfinite(state_point_.timestamp_)) {
+        return;
+    }
+
+    try {
+        RawScanCacheItem item;
+        item.stamp_sec = state_point_.timestamp_;
+        item.cloud_lidar.reset(new PointCloudType(*scan_undistort_));
+        item.pose_lio_lidar_in_world = state_point_.GetPose();
+        if (!item.pose_lio_lidar_in_world.matrix().allFinite()) {
+            return;
+        }
+        item.pose_opt_lidar_in_world = SE3();
+        item.has_lio_pose = true;
+        item.has_opt_pose = false;
+
+        size_t cache_size = 0;
+        {
+            std::lock_guard<std::mutex> lock(source_scan_cache_mutex_);
+            item.seq = source_scan_cache_seq_++;
+            source_scan_cache_.push_back(item);
+
+            const size_t min_keep_count =
+                static_cast<size_t>(std::max(1, options_.source_scan_accum_max_scans_ + 2));
+            while (source_scan_cache_.size() > min_keep_count &&
+                   options_.source_scan_accum_time_sec_ > 0.0 &&
+                   item.stamp_sec - source_scan_cache_.front().stamp_sec >
+                       options_.source_scan_accum_time_sec_ + 0.2) {
+                source_scan_cache_.pop_front();
+            }
+
+            const size_t hard_limit = std::max<size_t>(min_keep_count, 32);
+            while (source_scan_cache_.size() > hard_limit) {
+                source_scan_cache_.pop_front();
+            }
+            cache_size = source_scan_cache_.size();
+        }
+
+        if (options_.source_scan_accum_debug_enable_) {
+            LOG(INFO) << "source scan cache size=" << cache_size << " seq=" << item.seq
+                      << " stamp=" << std::setprecision(14) << item.stamp_sec
+                      << " points=" << item.cloud_lidar->size()
+                      << " frame=scan_end_lidar_body";
+
+            SourceScanAccumSelection selection;
+            BuildSourceScanAccumCandidate(item.stamp_sec, item.pose_lio_lidar_in_world, options_, &selection);
+            std::ostringstream oss;
+            oss << "source scan accum selection valid=" << selection.valid
+                << " reason=" << selection.reason
+                << " count=" << selection.selected_count
+                << " time_span=" << selection.time_span_sec
+                << " trans_span=" << selection.trans_span_m
+                << " yaw_span=" << selection.yaw_span_deg
+                << " frames=[";
+            for (size_t i = 0; i < selection.frames.size(); ++i) {
+                const auto& frame = selection.frames[i];
+                if (i > 0) {
+                    oss << ";";
+                }
+                oss << "seq=" << frame.seq
+                    << ",stamp=" << std::setprecision(14) << frame.stamp_sec
+                    << ",dt=" << frame.dt_to_curr_sec
+                    << ",trans=" << frame.trans_to_curr_m
+                    << ",yaw=" << frame.yaw_to_curr_deg;
+            }
+            oss << "]";
+            LOG(INFO) << oss.str();
+        }
+    } catch (const std::exception& e) {
+        LOG(WARNING) << "failed to update source scan cache: " << e.what();
+    } catch (...) {
+        LOG(WARNING) << "failed to update source scan cache: unknown error";
+    }
+}
+
+void LaserMapping::ProcessPointCloud2(const sensor_msgs::PointCloud2ConstPtr &msg) {
     UL lock(mtx_buffer_);
     Timer::Evaluate(
         [&, this]() {
@@ -433,7 +992,7 @@ void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::Share
         "Preprocess (Standard)");
 }
 
-void LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg) {
+void LaserMapping::ProcessPointCloud2(const livox_ros_driver2::CustomMsgConstPtr &msg) {
     UL lock(mtx_buffer_);
     Timer::Evaluate(
         [&, this]() {

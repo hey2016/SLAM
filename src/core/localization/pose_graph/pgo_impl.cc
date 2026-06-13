@@ -236,6 +236,8 @@ void PGOImpl::RunOptimization() {
     if (debug_) {
         LOG(INFO) << "Run pose graph optimization: ";
     }
+    last_pgo_before_error_ = std::numeric_limits<double>::quiet_NaN();
+    last_pgo_after_error_ = std::numeric_limits<double>::quiet_NaN();
 
     // build g2o problem
     BuildProblem();
@@ -243,7 +245,11 @@ void PGOImpl::RunOptimization() {
     // solve problems
     optimizer_->InitializeOptimization();
     optimizer_->SetVerbose(options_.verbose_);
+    optimizer_->ComputeActiveErrors();
+    last_pgo_before_error_ = optimizer_->ActiveRobustChi2();
     optimizer_->Optimize(5);
+    optimizer_->ComputeActiveErrors();
+    last_pgo_after_error_ = optimizer_->ActiveRobustChi2();
 
     // 确定inlier和outliers
     // RemoveOutliers();
@@ -752,6 +758,8 @@ void PGOImpl::PGOFrameToResult(const PGOFramePtr& frame, LocalizationResult& res
     Vec3d loc_err_body = result.pose_.so3().inverse() * loc_error;
     result.lidar_loc_error_vert_ = fabs(loc_err_body[0]);
     result.lidar_loc_error_hori_ = fabs(loc_err_body[1]);
+    result.pgo_before_error_ = last_pgo_before_error_;
+    result.pgo_after_error_ = last_pgo_after_error_;
 
     // 用lidarOdom和DR一起给出相对观测
     result.rel_pose_set_ = frame->lidar_odom_set_;

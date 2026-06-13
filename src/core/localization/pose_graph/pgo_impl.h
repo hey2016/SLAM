@@ -3,6 +3,7 @@
 #include <boost/format.hpp>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -221,6 +222,8 @@ struct PGOImpl {
 
     // output variables
     LocalizationResult result_;  // pgo融合定位结果
+    double last_pgo_before_error_ = std::numeric_limits<double>::quiet_NaN();
+    double last_pgo_after_error_ = std::numeric_limits<double>::quiet_NaN();
 
     // output call back
     std::function<void(const LocalizationResult& output_result)> output_func_;

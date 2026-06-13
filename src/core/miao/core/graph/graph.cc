@@ -105,12 +105,12 @@ bool Graph::RemoveEdge(Edge* e) {
     /// note: 直接在edges里移除it会导致shared_ptr计数清零，e变为dangling pointer
     std::shared_ptr<Edge> edge_to_remove = *it;
     edges_.erase(it);
-    for (const auto& vit : e->GetVertices()) {
+    for (const auto& vit : edge_to_remove->GetVertices()) {
         if (vit == nullptr) {
             continue;
         }
 
-        vit->RemoveEdge((*it).get());
+        vit->RemoveEdge(edge_to_remove.get());
     }
     return true;
 }

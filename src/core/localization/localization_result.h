@@ -3,7 +3,8 @@
 //
 #pragma once
 
-#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/TransformStamped.h>
+#include <limits>
 #include "common/eigen_types.h"
 #include "common/nav_state.h"
 
@@ -44,6 +45,8 @@ struct LocalizationResult {
 
     double lidar_odom_error_vert_ = 0;  // lidarOdom(通过滑窗首帧转换到map系下)相对于PGO定位的误差（纵向）
     double lidar_odom_error_hori_ = 0;  // lidarOdom(通过滑窗首帧转换到map系下)相对于PGO定位的误差（横向）
+    double pgo_before_error_ = std::numeric_limits<double>::quiet_NaN();  // PGO优化前误差
+    double pgo_after_error_ = std::numeric_limits<double>::quiet_NaN();   // PGO优化后误差
 
     bool rel_pose_set_ = false;      // 相对定位是否被设置（通常是lidarOdom）
     SE3 rel_pose_;                   // 相对定位的位置和姿态
@@ -52,7 +55,7 @@ struct LocalizationResult {
     double dr_delta_t_ = 0;          // 相对于上一帧DR消息的时延
     double is_parking_ = false;
 
-    geometry_msgs::msg::TransformStamped ToGeoMsg() const;  // 转到geometry msg
+    geometry_msgs::TransformStamped ToGeoMsg() const;  // 转到geometry msg
     NavState ToNavState() const;                            // 转到navstate
 };
 

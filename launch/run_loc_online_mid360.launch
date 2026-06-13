@@ -1,0 +1,10 @@
+<launch>
+  <arg name="config" default="$(find lightning)/config/default_mid360_cattle_ros1.yaml"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="odom_frame" default="odom"/>
+  <arg name="base_frame" default="base_link"/>
+  <arg name="livox_frame" default="livox_frame"/>
+
+  <node pkg="lightning" type="run_loc_online" name="run_loc_online" output="screen"
+        args="--config=$(arg config)"/>
+</launch>

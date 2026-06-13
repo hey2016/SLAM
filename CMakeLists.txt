@@ -6,9 +6,13 @@ project(lightning)
 if (NOT CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 17)
 endif ()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # set to release by default
-set(CMAKE_BUILD_TYPE Release)
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif ()
 
 # -------------------------------------------------------------
 # 导入第三方库，同时做一些全局编译选项配置
@@ -28,35 +32,84 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 # set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/libs)
 # set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/libs)
 
+find_package(catkin REQUIRED COMPONENTS
+        roscpp
+        rospy
+        std_msgs
+        geometry_msgs
+        sensor_msgs
+        nav_msgs
+        tf2
+        tf2_ros
+        tf2_geometry_msgs
+        pcl_ros
+        pcl_conversions
+        visualization_msgs
+        message_generation
+        rosbag
+        livox_ros_driver2
+)
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(cmake/packages.cmake)
 
-# msg 和 srv
-set(MY_SRV_FILES "")
-set(SRC_DIR ${PROJECT_SOURCE_DIR}/srv)
-file(GLOB_RECURSE SRC_FILES ${SRC_DIR}/*.srv)
-foreach (SRC_FILE ${SRC_FILES})
-    file(RELATIVE_PATH REL_PATH ${SRC_DIR} ${SRC_FILE})
-    list(APPEND MY_SRV_FILES ${PROJECT_SOURCE_DIR}:srv/${REL_PATH})
-endforeach ()
+file(GLOB SERVICE_FILES RELATIVE ${PROJECT_SOURCE_DIR}/srv srv/*.srv)
+add_service_files(
+        DIRECTORY srv
+        FILES ${SERVICE_FILES}
+)
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-        ${MY_SRV_FILES}
-        ${MY_MSG_FILES}
-        ${MY_ACTION_FILES}
-        DEPENDENCIES std_msgs geometry_msgs sensor_msgs nav_msgs
+generate_messages(
+        DEPENDENCIES
+        std_msgs
+        geometry_msgs
+        sensor_msgs
+        nav_msgs
+)
+
+catkin_package(
+        INCLUDE_DIRS
+        src
+        thirdparty
+        LIBRARIES
+        ${PROJECT_NAME}.libs
+        CATKIN_DEPENDS
+        roscpp
+        rospy
+        std_msgs
+        geometry_msgs
+        sensor_msgs
+        nav_msgs
+        tf2
+        tf2_ros
+        tf2_geometry_msgs
+        pcl_ros
+        pcl_conversions
+        visualization_msgs
+        message_runtime
+        rosbag
+        livox_ros_driver2
+        DEPENDS
+        PCL
 )
 
 include_directories(
-        ${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp
+        src
+        thirdparty
+        ${catkin_INCLUDE_DIRS}
 )
 
 install(DIRECTORY config
-        DESTINATION lib/${PROJECT_NAME}/
+        DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
-add_subdirectory(thirdparty/livox_ros_driver)
+install(DIRECTORY scripts
+        DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+        USE_SOURCE_PERMISSIONS
+)
+
+install(DIRECTORY launch
+        DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
 
 add_subdirectory(src)
-
-ament_package()

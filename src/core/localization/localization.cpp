@@ -9,6 +9,8 @@
 #include "core/localization/pose_graph/pgo.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
+#include "utils/lio_guess_diag.h"
+#include "utils/odom_base_diag.h"
 
 namespace lightning::loc {
 
@@ -43,18 +45,29 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_options.map_option_.enable_dynamic_polygon_ = false;
     lidar_loc_options.map_option_.map_path_ = global_map_path;
     lidar_loc_ = std::make_shared<LidarLoc>(lidar_loc_options);
+    lio_guess_diag_logger_ = std::make_shared<::lightning::LioGuessDiagLogger>();
+    lio_guess_diag_logger_->Init(yaml_path, options_.online_mode_ ? "loc_online" : "loc_offline");
+    lidar_loc_->SetLioGuessDiagLogger(lio_guess_diag_logger_);
+    odom_base_diag_logger_ = std::make_shared<::lightning::OdomBaseDiagLogger>();
+    odom_base_diag_logger_->Init(yaml_path, options_.online_mode_ ? "loc_online" : "loc_offline");
 
     if (options_.with_ui_) {
         ui_ = std::make_shared<ui::PangolinWindow>();
         ui_->SetCurrentScanSize(1);
-        ui_->Init();
-
-        lidar_loc_->SetUI(ui_);
+        if (ui_->Init()) {
+            lidar_loc_->SetUI(ui_);
+        } else {
+            LOG(WARNING) << "localization 3D UI disabled because Pangolin initialization failed";
+            ui_.reset();
+        }
 
         // lio_->SetUI(ui_);
     }
 
-    lidar_loc_->Init(yaml_path);
+    if (!lidar_loc_->Init(yaml_path)) {
+        LOG(ERROR) << "failed to init lidar localization";
+        return false;
+    }
 
     /// pose graph
     pgo_ = std::make_shared<PGO>();
@@ -94,6 +107,9 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         //         }
 
         loc_result_ = res;
+        if (odom_base_diag_logger_) {
+            odom_base_diag_logger_->ObserveFinalPose(loc_result_, "pgo_high_freq");
+        }
 
         if (tf_callback_ && loc_result_.valid_) {
             tf_callback_(loc_result_.ToGeoMsg());
@@ -102,6 +118,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         if (ui_) {
             ui_->UpdateNavState(loc_result_.ToNavState());
             ui_->UpdateRecentPose(loc_result_.pose_);
+        }
+
+        if (evaluation_callback_) {
+            evaluation_callback_(loc_result_);
         }
     });
 
@@ -137,7 +157,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     return true;
 }
 
-void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+void Localization::ProcessLidarMsg(const sensor_msgs::PointCloud2ConstPtr cloud) {
     UL lock(global_mutex_);
     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
@@ -146,7 +166,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     // 串行模式
     CloudPtr laser_cloud(new PointCloudType);
     preprocess_->Process(cloud, laser_cloud);
-    laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
+    laser_cloud->header.stamp = cloud->header.stamp.toNSec();
 
     if (options_.online_mode_) {
         lidar_odom_proc_cloud_.AddMessage(laser_cloud);
@@ -155,7 +175,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     }
 }
 
-void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::CustomMsgConstPtr cloud) {
     UL lock(global_mutex_);
     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
@@ -164,7 +184,7 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
     // 串行模式
     CloudPtr laser_cloud(new PointCloudType);
     preprocess_->Process(cloud, laser_cloud);
-    laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
+    laser_cloud->header.stamp = cloud->header.stamp.toNSec();
 
     if (options_.online_mode_) {
         lidar_odom_proc_cloud_.AddMessage(laser_cloud);
@@ -185,9 +205,15 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud) {
     }
 
     auto lo_state = lio_->GetState();
+    if (odom_base_diag_logger_) {
+        odom_base_diag_logger_->ObserveLio(lo_state);
+    }
 
     lidar_loc_->ProcessLO(lo_state);
     pgo_->ProcessLidarOdom(lo_state);
+    if (lidar_odom_callback_) {
+        lidar_odom_callback_(lo_state);
+    }
 
     // LOG(INFO) << "LO pose: " << std::setprecision(12) << lo_state.timestamp_ << " "
     //           << lo_state.GetPose().translation().transpose();
@@ -235,6 +261,13 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     lidar_loc_->ProcessCloud(scan_undist);
 
     auto res = lidar_loc_->GetLocalizationResult();
+    if (odom_base_diag_logger_) {
+        odom_base_diag_logger_->ObserveFinalPose(res, "lidar_loc");
+    }
+    if (lidar_loc_callback_) {
+        lidar_loc_callback_(res);
+    }
+
     pgo_->ProcessLidarLoc(res);
 
     if (ui_) {
@@ -243,7 +276,7 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     }
 
     if (loc_state_callback_) {
-        auto loc_state = std::make_shared<std_msgs::msg::Int32>();
+        auto loc_state = std::make_shared<std_msgs::Int32>();
         loc_state->data = static_cast<int>(res.status_);
         LOG(INFO) << "loc_state: " << loc_state->data;
         loc_state_callback_(*loc_state);
@@ -296,7 +329,7 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
     pgo_->ProcessDR(dr_state);
 }
 
-// void Localization::ProcessOdomMsg(const nav_msgs::msg::Odometry::SharedPtr odom_msg) {
+// void Localization::ProcessOdomMsg(const nav_msgs::OdometryConstPtr odom_msg) {
 //     UL lock(global_mutex_);
 //
 //     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
@@ -329,6 +362,12 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
 // }
 
 void Localization::Finish() {
+    if (lio_guess_diag_logger_) {
+        lio_guess_diag_logger_->Finish();
+    }
+    if (odom_base_diag_logger_) {
+        odom_base_diag_logger_->Finish();
+    }
     lidar_loc_->Finish();
     if (ui_) {
         ui_->Quit();
@@ -336,6 +375,57 @@ void Localization::Finish() {
 
     lidar_loc_proc_cloud_.Quit();
     lidar_odom_proc_cloud_.Quit();
+}
+
+void Localization::ObserveChassisOdom(const nav_msgs::Odometry& odom, double arrival_ros_time) {
+    ObserveChassisOdom("/odom", odom, arrival_ros_time);
+}
+
+void Localization::ObserveChassisOdom(const std::string& topic, const nav_msgs::Odometry& odom,
+                                      double arrival_ros_time) {
+    if (lio_guess_diag_logger_) {
+        lio_guess_diag_logger_->ObserveChassisOdom(odom, arrival_ros_time);
+    }
+    if (odom_base_diag_logger_) {
+        odom_base_diag_logger_->ObserveOdom(topic.empty() ? "/odom" : topic, odom, arrival_ros_time);
+    }
+}
+
+void Localization::ObserveChassisTf(const geometry_msgs::TransformStamped& tf_msg) {
+    if (lio_guess_diag_logger_) {
+        lio_guess_diag_logger_->ObserveChassisTf(tf_msg);
+    }
+    if (odom_base_diag_logger_) {
+        ::lightning::OdomBaseDiagLogger::TfObservation obs;
+        obs.lookup_ok = true;
+        obs.parent_frame = tf_msg.header.frame_id;
+        obs.child_frame = tf_msg.child_frame_id;
+        obs.query_stamp = tf_msg.header.stamp.toSec();
+        obs.tf_msg = tf_msg;
+        odom_base_diag_logger_->ObserveTf(obs);
+    }
+}
+
+void Localization::ObserveChassisTfQuery(const std::string& parent_frame, const std::string& child_frame,
+                                         double query_stamp, double lookup_timeout_sec, bool lookup_ok,
+                                         const geometry_msgs::TransformStamped& tf_msg,
+                                         const std::string& error_type, const std::string& error_string) {
+    if (lookup_ok && lio_guess_diag_logger_) {
+        lio_guess_diag_logger_->ObserveChassisTf(tf_msg);
+    }
+    if (odom_base_diag_logger_) {
+        ::lightning::OdomBaseDiagLogger::TfObservation obs;
+        obs.lookup_enable = true;
+        obs.lookup_ok = lookup_ok;
+        obs.parent_frame = parent_frame;
+        obs.child_frame = child_frame;
+        obs.query_stamp = query_stamp;
+        obs.lookup_timeout_sec = lookup_timeout_sec;
+        obs.tf_msg = tf_msg;
+        obs.error_type = error_type;
+        obs.error_string = error_string;
+        odom_base_diag_logger_->ObserveTf(obs);
+    }
 }
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
@@ -347,5 +437,17 @@ void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vec
 }
 
 void Localization::SetTFCallback(Localization::TFCallback&& callback) { tf_callback_ = callback; }
+
+void Localization::SetEvaluationCallback(Localization::EvaluationCallback&& callback) {
+    evaluation_callback_ = std::move(callback);
+}
+
+void Localization::SetLidarLocCallback(Localization::LidarLocCallback&& callback) {
+    lidar_loc_callback_ = std::move(callback);
+}
+
+void Localization::SetLidarOdomCallback(Localization::LidarOdomCallback&& callback) {
+    lidar_odom_callback_ = std::move(callback);
+}
 
 }  // namespace lightning::loc

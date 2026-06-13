@@ -48,6 +48,9 @@ class PangolinWindowImpl {
     /// 渲染所有信息
     void Render();
 
+    bool IsActive() const;
+    bool IsStopped() const;
+
     /// 获取窗口名称
     std::string GetWindowName() const;
 
@@ -65,6 +68,11 @@ class PangolinWindowImpl {
     std::mutex mtx_reset_;
 
     std::atomic<bool> exit_flag_;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> render_running_{false};
+    std::atomic<bool> render_stopped_{true};
+    std::atomic<bool> deinit_done_{false};
+    std::atomic<bool> window_alive_{false};
 
     std::atomic<bool> cloud_global_need_update_;   // 全局点云是否需要更新
     std::atomic<bool> cloud_dynamic_need_update_;  // 动态点云是否需要更新

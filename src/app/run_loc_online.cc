@@ -4,6 +4,7 @@
 
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+#include <ros/ros.h>
 
 #include "core/system/loc_system.h"
 #include "ui/pangolin_window.h"
@@ -17,10 +18,12 @@ int main(int argc, char** argv) {
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
 
+    ros::init(argc, argv, "run_loc_online");
     google::ParseCommandLineFlags(&argc, &argv, true);
-    using namespace lightning;
+    ros::NodeHandle pnh("~");
+    pnh.param<std::string>("config", FLAGS_config, FLAGS_config);
 
-    rclcpp::init(argc, argv);
+    using namespace lightning;
 
     LocSystem::Options opt;
     LocSystem loc(opt);
@@ -33,7 +36,7 @@ int main(int argc, char** argv) {
     loc.SetInitPose(SE3());
     loc.Spin();
 
-    rclcpp::shutdown();
+    ros::shutdown();
 
     return 0;
 }

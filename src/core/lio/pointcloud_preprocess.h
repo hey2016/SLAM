@@ -8,7 +8,7 @@
 
 #include "common/measure_group.h"
 #include "common/point_def.h"
-#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include <livox_ros_driver2/CustomMsg.h>
 
 namespace lightning {
 
@@ -29,9 +29,9 @@ class PointCloudPreprocess {
     ~PointCloudPreprocess() = default;
 
     /// processors
-    void Process(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
+    void Process(const sensor_msgs::PointCloud2ConstPtr &msg, PointCloudType::Ptr &pcl_out);
 
-    void Process(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud, PointCloudType::Ptr &pcl_out);
+    void Process(const livox_ros_driver2::CustomMsgConstPtr &cloud, PointCloudType::Ptr &pcl_out);
 
     void Set(LidarType lid_type, double bld, int pfilt_num);
 
@@ -49,9 +49,9 @@ class PointCloudPreprocess {
     }
 
    private:
-    void Oust64Handler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
-    void RoboSenseHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
-    void VelodyneHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
+    void Oust64Handler(const sensor_msgs::PointCloud2ConstPtr &msg);
+    void RoboSenseHandler(const sensor_msgs::PointCloud2ConstPtr &msg);
+    void VelodyneHandler(const sensor_msgs::PointCloud2ConstPtr &msg);
 
     PointCloudType cloud_full_, cloud_out_;
 

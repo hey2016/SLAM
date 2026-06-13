@@ -5,13 +5,18 @@
 #ifndef LIGHTNING_SLAM_H
 #define LIGHTNING_SLAM_H
 
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <ros/ros.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <string>
+#include <visualization_msgs/Marker.h>
 
-#include "lightning/srv/save_map.hpp"
-#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "lightning/SaveMap.h"
+#include <livox_ros_driver2/CustomMsg.h>
 
 #include "common/eigen_types.h"
 #include "common/imu.h"
@@ -21,6 +26,8 @@ namespace lightning {
 
 class LaserMapping;  //  lio 前端
 class LoopClosing;   // 回环检测
+class EvaluationWriter;
+class InputHealthLogger;
 
 namespace ui {
 class PangolinWindow;
@@ -49,7 +56,7 @@ class SlamSystem {
         bool step_on_kf_ = true;  // 是否在关键帧处暂停p
     };
 
-    using SaveMapService = srv::SaveMap;
+    using SaveMapService = ::lightning::SaveMap;
 
     SlamSystem(Options options);
     ~SlamSystem();
@@ -68,20 +75,26 @@ class SlamSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// 处理点云
-    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
-    void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
+    void ProcessLidar(const sensor_msgs::PointCloud2ConstPtr& cloud);
+    void ProcessLidar(const livox_ros_driver2::CustomMsgConstPtr& cloud);
 
     /// 实时模式下的spin
     void Spin();
 
    private:
     /// ros端保存地图的实现
-    void SaveMap(const SaveMapService::Request::SharedPtr request, SaveMapService::Response::SharedPtr response);
+    bool SaveMap(SaveMapService::Request& request, SaveMapService::Response& response);
+    void WriteEvaluationKeyframe(const Keyframe::Ptr& kf);
+    void RewriteOptimizedTrajectory(bool force);
+    void PublishKeyframeOutputs(const Keyframe::Ptr& kf);
+    nav_msgs::Odometry MakeOdometryMsg(const Keyframe::Ptr& kf) const;
+    visualization_msgs::Marker MakeKeyframeMarker(const Keyframe::Ptr& kf) const;
+    void CheckInputTfHealth(const ros::TimerEvent& event);
 
     Options options_;
     std::atomic_bool running_ = false;
 
-    rclcpp::Service<SaveMapService>::SharedPtr savemap_service_ = nullptr;
+    ros::ServiceServer savemap_service_;
 
     std::string map_name_;  // 地图名
 
@@ -91,16 +104,33 @@ class SlamSystem {
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
 
     Keyframe::Ptr cur_kf_ = nullptr;
+    std::shared_ptr<EvaluationWriter> evaluation_writer_ = nullptr;
+    std::size_t last_optimized_trajectory_kf_count_ = 0;
 
-    /// 实时模式下的ros2 node, subscribers
-    rclcpp::Node::SharedPtr node_;
+    /// 实时模式下的ROS1 node, subscribers
+    std::unique_ptr<ros::NodeHandle> node_;
     std::string imu_topic_;
     std::string cloud_topic_;
     std::string livox_topic_;
+    std::string input_odom_topic_ = "/odom";
+    std::string map_frame_ = "map";
+    std::string odom_frame_ = "odom";
+    std::string base_frame_ = "base_link";
+    std::string livox_frame_ = "livox_frame";
 
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
-    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
+    ros::Subscriber imu_sub_;
+    ros::Subscriber cloud_sub_;
+    ros::Subscriber livox_sub_;
+    ros::Subscriber input_odom_sub_;
+    ros::Publisher odom_pub_;
+    ros::Publisher path_pub_;
+    ros::Publisher keyframe_cloud_pub_;
+    ros::Publisher marker_pub_;
+    ros::Timer input_health_timer_;
+    nav_msgs::Path path_msg_;
+    std::shared_ptr<InputHealthLogger> input_health_logger_ = nullptr;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_ = nullptr;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_ = nullptr;
 };
 }  // namespace lightning
 

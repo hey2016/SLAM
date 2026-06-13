@@ -18,6 +18,7 @@
 #include "io/file_io.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
+#include "utils/lio_guess_diag.h"
 #include "utils/timer.h"
 
 namespace lightning::loc {
@@ -99,7 +100,10 @@ bool LidarLoc::Init(const std::string& config_path) {
     options_.map_option_.save_dyn_when_unload_ = yaml.GetValue<bool>("maps", "save_dyn_when_unload");
 
     map_ = std::make_shared<TiledMap>(options_.map_option_);
-    map_->LoadMapIndex();
+    if (!map_->LoadMapIndex()) {
+        LOG(ERROR) << "failed to load localization map from: " << options_.map_option_.map_path_;
+        return false;
+    }
 
     auto fps = map_->GetAllFP();
     if (!fps.empty()) {
@@ -541,6 +545,11 @@ void LidarLoc::Align(const CloudPtr& input) {
     /// NOTE: LO设置预测的位置和LidarLoc自身递推设置预测的方法并不完全一致，自身外推容易受噪声影响
 
     SE3 guess_from_lo = last_abs_pose_;
+    const bool diag_last_abs_valid = last_abs_pose_set_;
+    const bool diag_last_lo_valid = last_lo_pose_set_;
+    const SE3 diag_last_abs_pose = last_abs_pose_;
+    const SE3 diag_last_lo_pose = last_lo_pose_;
+    const SE3 diag_current_lo_pose = current_lo_pose_;
     if (last_lo_pose_set_ && current_lo_pose_set_) {
         // 如果有里程计，则用两个时刻的相对定位来递推，估计一个当前pose的初值
         const SE3 delta = last_lo_pose_.inverse() * current_lo_pose_;
@@ -553,6 +562,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         // guess_from_lo.translation()[2] = 0;
         LOG(INFO) << "loc using lo guess: " << guess_from_lo.translation().transpose();
     }
+    const SE3 diag_guess_from_lo = guess_from_lo;
 
     SE3 guess_from_self = guess_from_lo;
     if (lidar_loc_pose_queue_.size() >= 2) {
@@ -729,6 +739,41 @@ void LidarLoc::Align(const CloudPtr& input) {
         localization_result_.pose_ = current_pose_esti;
     }
 
+    if (lio_guess_diag_logger_ && lio_guess_diag_logger_->Enabled()) {
+        ::lightning::LioGuessDiagLogger::TraceInput trace;
+        trace.ros_time = current_timestamp_;
+        trace.scan_seq = ++lio_guess_scan_seq_;
+        trace.lio_valid = diag_last_lo_valid && current_lo_pose_set_;
+        trace.lio_stamp = current_timestamp_;
+        trace.last_lo_valid = diag_last_lo_valid;
+        trace.last_lo_pose = diag_last_lo_pose;
+        trace.current_lo_valid = current_lo_pose_set_;
+        trace.current_lo_pose = diag_current_lo_pose;
+        trace.lo_reliable = lo_reliable_;
+        trace.last_abs_valid = diag_last_abs_valid;
+        trace.last_abs_pose = diag_last_abs_pose;
+        trace.guess_valid = diag_last_abs_valid;
+        trace.guess_from_lo = diag_guess_from_lo;
+        trace.match.ndt_valid = last_localize_debug_.ndt_valid;
+        trace.match.ndt_converged = last_localize_debug_.ndt_converged;
+        trace.match.ndt_confidence = last_localize_debug_.ndt_confidence;
+        trace.match.ndt_score = last_localize_debug_.ndt_score;
+        trace.match.ndt_pose = last_localize_debug_.ndt_pose;
+        trace.match.icp_valid = last_localize_debug_.icp_valid;
+        trace.match.icp_converged = last_localize_debug_.icp_converged;
+        trace.match.icp_accepted = last_localize_debug_.icp_accepted;
+        trace.match.icp_pose = last_localize_debug_.icp_pose;
+        trace.final_pose_valid = true;
+        trace.final_pose = current_pose_esti;
+        trace.loc_success = loc_success;
+        trace.loc_inited = loc_inited_;
+        trace.loc_stage = loc_success ? "localized" : "match_failed";
+        trace.reject_reason = loc_success ? "" : "localize returned false";
+        trace.point_count = input ? static_cast<int>(input->size()) : 0;
+        trace.match_fail_count = match_fail_count_;
+        lio_guess_diag_logger_->WriteTrace(trace);
+    }
+
     UpdateState(input);
 
     /// 8. 更新动态图层
@@ -820,6 +865,7 @@ bool LidarLoc::CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_p
 }
 
 bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res) {
+    last_localize_debug_ = LocalizeDebug();
     Eigen::Matrix4f trans;
     bool loc_success = false;
     Eigen::Matrix4f guess_pose = pose.matrix().cast<float>();
@@ -844,6 +890,17 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     ndt->align(*output, guess_pose);
     trans = ndt->getFinalTransformation();
     confidence = ndt->getTransformationProbability();
+    {
+        Eigen::Matrix3d rot = trans.block<3, 3>(0, 0).cast<double>();
+        Quatd q_3d = Quatd(rot);
+        q_3d.normalize();
+        Vec3d t_3d = trans.block<3, 1>(0, 3).cast<double>();
+        last_localize_debug_.ndt_valid = true;
+        last_localize_debug_.ndt_converged = ndt->hasConverged();
+        last_localize_debug_.ndt_confidence = confidence;
+        last_localize_debug_.ndt_score = confidence;
+        last_localize_debug_.ndt_pose = SE3(q_3d, t_3d);
+    }
 
     auto tgt = ndt->getInputTarget();
     if (!tgt->empty()) {
@@ -868,6 +925,15 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         pcl_icp_->setInputSource(input_voxel);
         Timer::Evaluate([&]() { pcl_icp_->align(*output, trans); }, "pcl_icp adjust", true);
         adjust_trans = pcl_icp_->getFinalTransformation();
+        {
+            Eigen::Matrix3d rot = adjust_trans.block<3, 3>(0, 0).cast<double>();
+            Quatd q_3d = Quatd(rot);
+            q_3d.normalize();
+            Vec3d t_3d = adjust_trans.block<3, 1>(0, 3).cast<double>();
+            last_localize_debug_.icp_valid = true;
+            last_localize_debug_.icp_converged = pcl_icp_->hasConverged();
+            last_localize_debug_.icp_pose = SE3(q_3d, t_3d);
+        }
 
         Eigen::Matrix3f rotation_diff = trans.block<3, 3>(0, 0).transpose() * adjust_trans.block<3, 3>(0, 0);
         Eigen::AngleAxisf angle_axis(rotation_diff);
@@ -878,6 +944,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         if (pcl_icp_->hasConverged() && std::fabs(d) <= 0.05 && std::fabs(a) <= 0.05) {
             LOG(INFO) << "icp ajust trans set success";
             trans = adjust_trans;
+            last_localize_debug_.icp_accepted = true;
         }
     }
 

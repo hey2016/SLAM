@@ -3,8 +3,12 @@
 
 #include <pcl/filters/voxel_grid.h>
 #include <condition_variable>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <deque>
+#include <mutex>
+#include <sensor_msgs/PointCloud2.h>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "common/eigen_types.h"
 #include "common/imu.h"
@@ -15,7 +19,7 @@
 #include "core/lio/imu_processing.hpp"
 #include "pointcloud_preprocess.h"
 
-#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include <livox_ros_driver2/CustomMsg.h>
 
 namespace lightning {
 
@@ -47,11 +51,75 @@ class LaserMapping {
 
         bool proj_kfs_ = false;
         int max_proj_kfs_ = 5;
+
+        bool loop_source_accum_enable_ = false;
+        int loop_source_accum_frame_count_ = 3;
+        int loop_source_accum_min_frames_ = 2;
+        double loop_source_accum_max_time_span_sec_ = 1.0;
+
+        bool source_scan_accum_enable_ = false;
+        int source_scan_accum_max_scans_ = 5;
+        int source_scan_accum_min_scans_ = 3;
+        double source_scan_accum_time_sec_ = 0.5;
+        double source_scan_accum_max_trans_m_ = 1.2;
+        double source_scan_accum_max_yaw_deg_ = 8.0;
+        double source_scan_accum_voxel_leaf_m_ = 0.10;
+        int source_scan_accum_max_points_ = 30000;
+        int source_scan_accum_min_points_ = 3000;
+        double source_scan_accum_max_yaw_rate_degps_ = 30.0;
+        double source_scan_accum_max_trans_rate_mps_ = 2.5;
+        bool source_scan_accum_require_monotonic_stamp_ = true;
+        bool source_scan_accum_debug_enable_ = false;
     };
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     using IVoxType = IVox<3, IVoxNodeType::DEFAULT, PointType>;
+
+    struct RawScanCacheItem {
+        double stamp_sec = 0.0;
+        // Undistorted single scan in the scan-end LiDAR/body local coordinate frame.
+        CloudPtr cloud_lidar = nullptr;
+        SE3 pose_lio_lidar_in_world;
+        SE3 pose_opt_lidar_in_world;
+        bool has_lio_pose = false;
+        bool has_opt_pose = false;
+        int64_t seq = 0;
+    };
+
+    struct SourceScanAccumSelectedFrame {
+        int64_t seq = 0;
+        double stamp_sec = 0.0;
+        double dt_to_curr_sec = 0.0;
+        double trans_to_curr_m = 0.0;
+        double yaw_to_curr_deg = 0.0;
+        CloudPtr cloud_lidar = nullptr;
+        SE3 pose_lio_lidar_in_world;
+    };
+
+    struct SourceScanAccumSelection {
+        bool valid = false;
+        std::string reason = "ACCUM_TOO_FEW_SCANS";
+        double curr_stamp_sec = 0.0;
+        int selected_count = 0;
+        double time_span_sec = 0.0;
+        double trans_span_m = 0.0;
+        double yaw_span_deg = 0.0;
+        double trans_rate_mps = 0.0;
+        double yaw_rate_degps = 0.0;
+        std::vector<SourceScanAccumSelectedFrame> frames;
+    };
+
+    struct SourceScanAccumCloudResult {
+        bool success = false;
+        CloudPtr cloud_lidar = nullptr;
+        int scan_count = 0;
+        double time_span_sec = 0.0;
+        long points_before_downsample = 0;
+        long points_after_downsample = 0;
+        std::string fallback_reason = "ACCUM_TOO_FEW_SCANS";
+        SourceScanAccumSelection selection;
+    };
 
     LaserMapping(Options options = Options());
     ~LaserMapping() {
@@ -68,10 +136,10 @@ class LaserMapping {
 
     // callbacks of lidar and imu
     /// 处理ROS2的点云
-    void ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
+    void ProcessPointCloud2(const sensor_msgs::PointCloud2ConstPtr &msg);
 
     /// 处理livox的点云
-    void ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);
+    void ProcessPointCloud2(const livox_ros_driver2::CustomMsgConstPtr &msg);
 
     /// 如果已经做了预处理，也可以直接处理点云
     void ProcessPointCloud2(CloudPtr cloud);
@@ -108,6 +176,28 @@ class LaserMapping {
 
     std::vector<Keyframe::Ptr> GetAllKeyframes() { return all_keyframes_; }
 
+    std::vector<RawScanCacheItem> GetSourceScanCacheSnapshot() const;
+
+    bool BuildSourceScanAccumCandidate(double curr_stamp_sec, const SE3& T_w_curr,
+                                        const Options& options, SourceScanAccumSelection* out) const;
+
+    static bool SelectSourceScanAccumCandidateFromCache(const std::vector<RawScanCacheItem>& cache,
+                                                        double curr_stamp_sec,
+                                                        const SE3& T_w_curr,
+                                                        const Options& options,
+                                                        SourceScanAccumSelection* out);
+
+    bool BuildSourceScanAccumCloud(double curr_stamp_sec, const SE3& T_w_curr,
+                                   const Options& options, SourceScanAccumCloudResult* out) const;
+
+    bool BuildSourceScanAccumCloud(double curr_stamp_sec, const SE3& T_w_curr,
+                                   SourceScanAccumCloudResult* out) const;
+
+    static bool BuildSourceScanAccumCloudFromSelection(const SourceScanAccumSelection& selection,
+                                                       const SE3& T_w_curr,
+                                                       const Options& options,
+                                                       SourceScanAccumCloudResult* out);
+
     /**
      * 计算全局地图
      * @param use_lio_pose
@@ -142,6 +232,10 @@ class LaserMapping {
     /// 将附近的关键帧投影至cloud中
     void ProjectKFs(CloudPtr cloud, int size_limit = 1000);
 
+    void CacheLoopSourceScanFrame();
+
+    void CacheSourceScanForLoopClosing();
+
    private:
     Options options_;
 
@@ -164,6 +258,10 @@ class LaserMapping {
     std::vector<Keyframe::Ptr> all_keyframes_;
     Keyframe::Ptr last_kf_ = nullptr;
     int kf_id_ = 0;
+    std::deque<Keyframe::SourceScanFrame> loop_source_scan_history_;
+    mutable std::mutex source_scan_cache_mutex_;
+    std::deque<RawScanCacheItem> source_scan_cache_;
+    int64_t source_scan_cache_seq_ = 0;
 
     /// point clouds data
     CloudPtr scan_undistort_{new PointCloudType()};   // scan after undistortion

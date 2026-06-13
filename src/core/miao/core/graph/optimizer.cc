@@ -363,13 +363,18 @@ bool Optimizer::AddEdge(std::shared_ptr<Edge> e) {
 }
 
 bool Optimizer::RemoveEdge(std::shared_ptr<Edge> e) {
-    auto it =
-        std::find_if(active_edges_.begin(), active_edges_.end(), [&](const auto &item) { return e.get() == item; });
-    if (it == active_edges_.end()) {
-        return false;
-    }
-    *it = active_edges_.back();
-    active_edges_.pop_back();
-    return Graph::RemoveEdge(e);
+    const auto raw = e.get();
+    auto active_it = std::remove_if(active_edges_.begin(), active_edges_.end(),
+                                    [&](const auto &item) { return raw == item; });
+    const bool removed_active = active_it != active_edges_.end();
+    active_edges_.erase(active_it, active_edges_.end());
+
+    auto new_it = std::remove_if(new_edges_.begin(), new_edges_.end(),
+                                 [&](const auto &item) { return raw == item.get(); });
+    const bool removed_new = new_it != new_edges_.end();
+    new_edges_.erase(new_it, new_edges_.end());
+
+    const bool removed_graph = Graph::RemoveEdge(e);
+    return removed_active || removed_new || removed_graph;
 }
 }  // namespace lightning::miao

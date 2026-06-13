@@ -1,0 +1,13 @@
+<launch>
+  <arg name="config" default="$(find lightning)/config/default_mid360_cattle_ros1.yaml"/>
+  <arg name="input_bag" default=""/>
+  <arg name="map_path" default="./data/new_map/"/>
+  <arg name="output_dir" default="./data/evaluation"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="odom_frame" default="odom"/>
+  <arg name="base_frame" default="base_link"/>
+  <arg name="livox_frame" default="livox_frame"/>
+
+  <node pkg="lightning" type="run_loc_offline" name="run_loc_offline" output="screen"
+        args="--config=$(arg config) --input_bag=$(arg input_bag) --map_path=$(arg map_path) --output_dir=$(arg output_dir)"/>
+</launch>

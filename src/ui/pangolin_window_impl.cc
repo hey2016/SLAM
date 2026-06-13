@@ -1,4 +1,6 @@
 #include <pangolin/display/default_font.h>
+#include <glog/logging.h>
+#include <exception>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -12,17 +14,38 @@
 namespace lightning::ui {
 
 bool PangolinWindowImpl::Init() {
-    // create a window and bind its context to the main thread
-    pangolin::CreateWindowAndBind(win_name_, win_width_, win_height_);
+    exit_flag_.store(false);
+    initialized_.store(false);
+    render_running_.store(false);
+    render_stopped_.store(true);
+    deinit_done_.store(false);
+    window_alive_.store(false);
 
-    // 3D mouse handler requires depth testing to be enabled
-    glEnable(GL_DEPTH_TEST);
+    try {
+        // create a window and bind its context to the main thread
+        pangolin::CreateWindowAndBind(win_name_, win_width_, win_height_);
+        window_alive_.store(true);
 
-    // opengl buffer
-    AllocateBuffer();
+        // 3D mouse handler requires depth testing to be enabled
+        glEnable(GL_DEPTH_TEST);
 
-    // unset the current context from the main thread
-    pangolin::GetBoundWindow()->RemoveCurrent();
+        // opengl buffer
+        AllocateBuffer();
+
+        // unset the current context from the main thread
+        auto* window = pangolin::GetBoundWindow();
+        if (window != nullptr) {
+            window->RemoveCurrent();
+        }
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "[ui] failed to initialize Pangolin window: " << e.what();
+        window_alive_.store(false);
+        return false;
+    } catch (...) {
+        LOG(ERROR) << "[ui] failed to initialize Pangolin window: unknown exception";
+        window_alive_.store(false);
+        return false;
+    }
 
     // 雷达定位轨迹opengl设置
     traj_newest_state_.reset(new ui::UiTrajectory(Vec3f(1.0, 0.0, 0.0)));  // 红色
@@ -38,6 +61,7 @@ bool PangolinWindowImpl::Init() {
     log_confidence_.SetLabels(std::vector<std::string>{"lidar loc confidence"});
     log_error_.SetLabels(std::vector<std::string>{"err v", "err h", "err eval v", "err eval h"});
 
+    initialized_.store(true);
     return true;
 }
 
@@ -56,7 +80,7 @@ void PangolinWindowImpl::Reset(const std::vector<Keyframe::Ptr> &keyframes) {
     for (; i < keyframes.size(); ++i) {
         const auto &keyframe = keyframes.at(i);
         current_scan_ui_ = std::make_shared<ui::UiCloud>();
-        CloudPtr tmp_cloud = std::make_shared<PointCloudType>(*(keyframe->GetCloud()));
+        CloudPtr tmp_cloud(new PointCloudType(*(keyframe->GetCloud())));
         current_scan_ui_->SetCloud(math::VoxelGrid(tmp_cloud, 0.5), keyframe->GetOptPose());
         current_scan_ui_->SetRenderColor(ui::UiCloud::UseColor::HEIGHT_COLOR);
 
@@ -67,6 +91,10 @@ void PangolinWindowImpl::Reset(const std::vector<Keyframe::Ptr> &keyframes) {
 }
 
 bool PangolinWindowImpl::DeInit() {
+    bool expected = false;
+    if (!deinit_done_.compare_exchange_strong(expected, true)) {
+        return true;
+    }
     ReleaseBuffer();
     return true;
 }
@@ -358,81 +386,116 @@ void PangolinWindowImpl::CreateDisplayLayout() {
 }
 
 void PangolinWindowImpl::Render() {
-    pangolin::BindToContext(win_name_);
+    render_running_.store(true);
+    render_stopped_.store(false);
 
-    // Issue specific OpenGl we might need
-    // 启用OpenGL深度测试和混合功能，以支持透明度等效果。
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    // menu
-    pangolin::CreatePanel("menu").SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(menu_width_));
-    pangolin::Var<bool> menu_follow_loc("menu.Follow", false, true);                     // 跟踪实时定位
-    pangolin::Var<bool> menu_draw_frontend_traj("menu.Draw Frontend Traj", true, true);  // 前端实时轨迹
-    pangolin::Var<bool> menu_draw_backend_traj("menu.Draw Backend Traj", true, true);    // 后端实时轨迹
-    pangolin::Var<bool> menu_reset_3d_view("menu.Reset 3D View", false, false);          // 重置俯视视角
-    pangolin::Var<bool> menu_reset_front_view("menu.Set to front View", false, false);   // 前视视角
-    pangolin::Var<bool> menu_step("menu.Step", false, false);                            // 单步调试
-    pangolin::Var<float> menu_play_speed("menu.Play speed", 10.0, 0.1, 10.0);            // 运行速度
-    pangolin::Var<float> menu_intensity("menu.intensity", 0.5, 0.0, 1.0);                // 亮度
-
-    // display layout
-    CreateDisplayLayout();
-
-    exit_flag_.store(false);
-    while (!pangolin::ShouldQuit() && !exit_flag_) {
-        // Clear entire screen
-        glClearColor(20.0 / 255.0, 20.0 / 255.0, 20.0 / 255.0, 1.0);
-        // 清除了颜色缓冲区（GL_COLOR_BUFFER_BIT）和深度缓冲区（GL_DEPTH_BUFFER_BIT）。
-        // 通常在每一帧渲染之前执行的操作，以准备渲染新的内容。
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // menu control
-        following_loc_ = menu_follow_loc;
-        draw_frontend_traj_ = menu_draw_frontend_traj;
-        draw_backend_traj_ = menu_draw_backend_traj;
-
-        if (menu_reset_3d_view) {
-            s_cam_main_.SetModelViewMatrix(pangolin::ModelViewLookAt(0, 0, 1000, 0, 0, 0, pangolin::AxisY));
-            menu_reset_3d_view = false;
+    auto cleanup_window = [this]() {
+        try {
+            auto* window = pangolin::GetBoundWindow();
+            if (window != nullptr) {
+                window->RemoveCurrent();
+            }
+        } catch (const std::exception& e) {
+            LOG(WARNING) << "[ui] Pangolin RemoveCurrent failed during shutdown: " << e.what();
+        } catch (...) {
+            LOG(WARNING) << "[ui] Pangolin RemoveCurrent failed during shutdown: unknown exception";
         }
 
-        if (menu_reset_front_view) {
-            s_cam_main_.SetModelViewMatrix(pangolin::ModelViewLookAt(-50, 0, 10, 50, 0, 10, pangolin::AxisZ));
-            menu_reset_front_view = false;
+        if (window_alive_.exchange(false)) {
+            try {
+                pangolin::DestroyWindow(GetWindowName());
+            } catch (const std::exception& e) {
+                LOG(WARNING) << "[ui] Pangolin DestroyWindow failed during shutdown: " << e.what();
+            } catch (...) {
+                LOG(WARNING) << "[ui] Pangolin DestroyWindow failed during shutdown: unknown exception";
+            }
         }
+    };
 
-        if (menu_step) {
-            debug::flg_next = true;
-        } else {
-            debug::flg_next = false;
+    try {
+        pangolin::BindToContext(win_name_);
+
+        // Issue specific OpenGl we might need
+        // 启用OpenGL深度测试和混合功能，以支持透明度等效果。
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // menu
+        pangolin::CreatePanel("menu").SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(menu_width_));
+        pangolin::Var<bool> menu_follow_loc("menu.Follow", false, true);                     // 跟踪实时定位
+        pangolin::Var<bool> menu_draw_frontend_traj("menu.Draw Frontend Traj", true, true);  // 前端实时轨迹
+        pangolin::Var<bool> menu_draw_backend_traj("menu.Draw Backend Traj", true, true);    // 后端实时轨迹
+        pangolin::Var<bool> menu_reset_3d_view("menu.Reset 3D View", false, false);          // 重置俯视视角
+        pangolin::Var<bool> menu_reset_front_view("menu.Set to front View", false, false);   // 前视视角
+        pangolin::Var<bool> menu_step("menu.Step", false, false);                            // 单步调试
+        pangolin::Var<float> menu_play_speed("menu.Play speed", 10.0, 0.1, 10.0);            // 运行速度
+        pangolin::Var<float> menu_intensity("menu.intensity", 0.5, 0.0, 1.0);                // 亮度
+
+        // display layout
+        CreateDisplayLayout();
+
+        while (!pangolin::ShouldQuit() && !exit_flag_) {
+            // Clear entire screen
+            glClearColor(20.0 / 255.0, 20.0 / 255.0, 20.0 / 255.0, 1.0);
+            // 清除了颜色缓冲区（GL_COLOR_BUFFER_BIT）和深度缓冲区（GL_DEPTH_BUFFER_BIT）。
+            // 通常在每一帧渲染之前执行的操作，以准备渲染新的内容。
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            // menu control
+            following_loc_ = menu_follow_loc;
+            draw_frontend_traj_ = menu_draw_frontend_traj;
+            draw_backend_traj_ = menu_draw_backend_traj;
+
+            if (menu_reset_3d_view) {
+                s_cam_main_.SetModelViewMatrix(pangolin::ModelViewLookAt(0, 0, 1000, 0, 0, 0, pangolin::AxisY));
+                menu_reset_3d_view = false;
+            }
+
+            if (menu_reset_front_view) {
+                s_cam_main_.SetModelViewMatrix(pangolin::ModelViewLookAt(-50, 0, 10, 50, 0, 10, pangolin::AxisZ));
+                menu_reset_front_view = false;
+            }
+
+            if (menu_step) {
+                debug::flg_next = true;
+            } else {
+                debug::flg_next = false;
+            }
+
+            debug::play_speed = menu_play_speed;
+            ui::opacity = menu_intensity;
+
+            // Render pointcloud
+            RenderClouds();
+
+            /// 处理相机跟随问题
+            if (following_loc_) {
+                Eigen::Vector3d translation = newest_frontend_pose_.translation();
+                Sophus::SE3d newest_frontend_pose_new(Eigen::Quaterniond::Identity(),
+                                                      Eigen::Vector3d(translation.x(), translation.y(), 0.0));
+                s_cam_main_.Follow(newest_frontend_pose_new.matrix());
+            }
+
+            // Swap frames and Process Events
+            // 完成当前帧的渲染并处理与窗口交互相关的事件
+
+            pangolin::FinishFrame();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-
-        debug::play_speed = menu_play_speed;
-        ui::opacity = menu_intensity;
-
-        // Render pointcloud
-        RenderClouds();
-
-        /// 处理相机跟随问题
-        if (following_loc_) {
-            Eigen::Vector3d translation = newest_frontend_pose_.translation();
-            Sophus::SE3d newest_frontend_pose_new(Eigen::Quaterniond::Identity(),
-                                                  Eigen::Vector3d(translation.x(), translation.y(), 0.0));
-            s_cam_main_.Follow(newest_frontend_pose_new.matrix());
-        }
-
-        // Swap frames and Process Events
-        // 完成当前帧的渲染并处理与窗口交互相关的事件
-
-        pangolin::FinishFrame();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } catch (const std::exception& e) {
+        LOG(WARNING) << "[ui] Pangolin render thread stopped after exception: " << e.what();
+    } catch (...) {
+        LOG(WARNING) << "[ui] Pangolin render thread stopped after unknown exception";
     }
 
-    // unset the current context from the main thread
-    pangolin::GetBoundWindow()->RemoveCurrent();
-    pangolin::DestroyWindow(GetWindowName());
+    cleanup_window();
+    render_running_.store(false);
+    render_stopped_.store(true);
 }
+
+bool PangolinWindowImpl::IsActive() const { return initialized_.load() && !render_stopped_.load(); }
+
+bool PangolinWindowImpl::IsStopped() const { return render_stopped_.load(); }
 
 std::string PangolinWindowImpl::GetWindowName() const { return win_name_; }
 

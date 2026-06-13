@@ -4,7 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <iostream>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/PointCloud2.h>
 #include <thread>
 
 #include "common/nav_state.h"
@@ -16,6 +16,10 @@
 
 namespace lightning::ui {
 class PangolinWindow;
+}
+
+namespace lightning {
+class LioGuessDiagLogger;
 }
 
 namespace lightning::loc {
@@ -119,6 +123,9 @@ class LidarLoc {
 
     /// 设置UI
     void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
+    void SetLioGuessDiagLogger(std::shared_ptr<::lightning::LioGuessDiagLogger> logger) {
+        lio_guess_diag_logger_ = std::move(logger);
+    }
 
     /// 设置init pose
     void SetInitialPose(SE3 init_pose);
@@ -180,6 +187,18 @@ class LidarLoc {
     bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
 
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
+
+    struct LocalizeDebug {
+        bool ndt_valid = false;
+        bool ndt_converged = false;
+        double ndt_confidence = 0.0;
+        double ndt_score = 0.0;
+        SE3 ndt_pose;
+        bool icp_valid = false;
+        bool icp_converged = false;
+        bool icp_accepted = false;
+        SE3 icp_pose;
+    };
 
     // 成员变量  ==========================================================================
     Options options_;
@@ -259,6 +278,9 @@ class LidarLoc {
     std::thread update_map_thread_;            // 地图更新
     std::shared_ptr<TiledMap> map_ = nullptr;  // 地图
     double map_height_ = 0;
+    std::shared_ptr<::lightning::LioGuessDiagLogger> lio_guess_diag_logger_ = nullptr;
+    LocalizeDebug last_localize_debug_;
+    int64_t lio_guess_scan_seq_ = 0;
 
     bool has_set_pose_ = false;  // 外部set_pose标志位，若存在则本次动态图层不落盘
 

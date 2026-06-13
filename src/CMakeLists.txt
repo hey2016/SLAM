@@ -31,6 +31,11 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         utils/timer.cc
         utils/pointcloud_utils.cc
+        utils/evaluation_writer.cc
+        utils/input_health_logger.cc
+        utils/lio_guess_diag.cc
+        utils/odom_base_diag.cc
+        utils/loop_debug_logger.cc
 
         ui/pangolin_window.cc
         ui/pangolin_window_impl.cc
@@ -44,24 +49,14 @@ add_library(${PROJECT_NAME}.libs SHARED
         wrapper/bag_io.cc
 )
 
-ament_target_dependencies(
-        ${PROJECT_NAME}.libs
-        "rclcpp"
-        "std_msgs"
-        "geometry_msgs"
-        "sensor_msgs"
-        "nav_msgs"
-        "std_srvs"
-        "message_filters"
-        "pcl_conversions"
-        "tf2_ros"
-        "tf2"
+add_dependencies(${PROJECT_NAME}.libs
+        ${${PROJECT_NAME}_EXPORTED_TARGETS}
+        ${catkin_EXPORTED_TARGETS}
 )
 
-add_dependencies(${PROJECT_NAME}.libs
-        livox_interfaces2__rosidl_typesupport_cpp
-        ${PROJECT_NAME}__rosidl_typesupport_cpp
-)
+if (TARGET livox_ros_driver2_generate_messages_cpp)
+        add_dependencies(${PROJECT_NAME}.libs livox_ros_driver2_generate_messages_cpp)
+endif ()
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
 add_subdirectory(core/miao)
@@ -69,10 +64,9 @@ add_subdirectory(core/miao)
 target_link_libraries(${PROJECT_NAME}.libs
         ${third_party_libs}
         ${PCL_LIBRARIES}
+        ${catkin_LIBRARIES}
         miao.core
         miao.utils
-        livox_interfaces2__rosidl_typesupport_cpp
-        ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
