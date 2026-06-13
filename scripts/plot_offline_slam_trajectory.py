@@ -174,6 +174,58 @@ def merge_detail_maps(*maps):
     return merged
 
 
+FINAL_EVENT_FIELDS = [
+    "event_id",
+    "candidate_rank",
+    "curr_kf_candidate_count",
+    "final_status",
+    "reject_reason_primary",
+    "reject_reason_secondary",
+    "selected_for_pgo_trial",
+    "suppressed_by_same_curr_kf_nms",
+    "committed",
+    "pose_writeback",
+    "edge_committed",
+    "ndt_score",
+    "ndt_score_threshold",
+    "inlier_ratio",
+    "inlier_ratio_threshold",
+    "source_type",
+    "source_scan_count",
+    "source_time_span_sec",
+    "init_to_ndt_xy",
+    "init_to_ndt_yaw_deg",
+    "init_to_ndt_z",
+    "loop_chi2",
+    "rk_loop_th",
+    "adjacent_pose_gate_result",
+    "adjacent_pose_gate_reject_reason",
+    "shape_gate_result",
+    "shape_gate_reject_reason",
+    "shape_local_max_delta_max_m",
+    "shape_local_max_delta_p95_m",
+    "shape_local_max_delta_mean_m",
+]
+
+
+def read_loop_final_event_details(loop_debug_dir: Path, pair_set):
+    return read_pair_detail_file(loop_debug_dir / "loop_final_events.csv", pair_set, FINAL_EVENT_FIELDS)
+
+
+def apply_final_event_status(events, final_event_details):
+    for event in events:
+        pair = (event["keyframe_id"], event["candidate_id"])
+        details = final_event_details.get(pair, {})
+        if not details:
+            continue
+        event.update(details)
+        if event.get("final_status"):
+            event["status"] = event["final_status"]
+        committed = parse_bool(event.get("committed"))
+        if committed is not None:
+            event["accepted"] = committed
+
+
 def read_loop_debug_details(loop_debug_dir: Path, pair_set):
     if not loop_debug_dir.exists() or not pair_set:
         return {}
@@ -212,6 +264,7 @@ def read_loop_debug_details(loop_debug_dir: Path, pair_set):
                 "risk_score",
             ],
         ),
+        read_loop_final_event_details(loop_debug_dir, pair_set),
     )
 
 
@@ -234,6 +287,7 @@ def read_live_loop_debug_details(loop_debug_dir: Path, pair_set):
             pair_set,
             ["loop_chi2", "rk_loop_th"],
         ),
+        read_loop_final_event_details(loop_debug_dir, pair_set),
     )
 
 
@@ -338,6 +392,16 @@ def main():
         if opt_xy:
             event["x"], event["y"] = opt_xy
 
+    all_pair_set = {
+        (e["keyframe_id"], e["candidate_id"])
+        for e in all_events
+        if e["keyframe_id"] is not None and e["candidate_id"] is not None
+    }
+    apply_final_event_status(
+        all_events,
+        read_loop_final_event_details(evaluation_dir / "loop_debug", all_pair_set),
+    )
+
     if args.loop_filter == "accepted":
         events = [e for e in all_events if e["accepted"]]
     elif args.loop_filter == "rejected":
@@ -358,8 +422,7 @@ def main():
     for event in table_events:
         pair = (event["keyframe_id"], event["candidate_id"])
         event.update(loop_debug_details.get(pair, {}))
-        if event.get("final_status"):
-            event["status"] = event["final_status"]
+    apply_final_event_status(table_events, {pair: loop_debug_details.get(pair, {}) for pair in pair_set})
     accepted_events = [e for e in events if e["accepted"]]
     rejected_events = [e for e in events if not e["accepted"]]
 

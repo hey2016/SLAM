@@ -21,6 +21,7 @@ class LoopDebugLogger {
         bool log_candidates = true;
         bool log_matches = true;
         bool log_gate_decisions = true;
+        bool log_raw_candidate_gates = false;
         bool log_pgo_impact = true;
         int flush_every_n = 1;
         int max_suspects = 100;
@@ -279,6 +280,41 @@ class LoopDebugLogger {
         int candidate_rank = -1;
     };
 
+    struct FinalEventRow {
+        long event_id = -1;
+        unsigned long curr_kf_id = 0;
+        unsigned long hist_kf_id = 0;
+        int candidate_rank = -1;
+        int curr_kf_candidate_count = -1;
+        std::string final_status;
+        std::string reject_reason_primary;
+        std::string reject_reason_secondary;
+        bool selected_for_pgo_trial = false;
+        bool suppressed_by_same_curr_kf_nms = false;
+        bool committed = false;
+        bool pose_writeback = false;
+        bool edge_committed = false;
+        double ndt_score = std::numeric_limits<double>::quiet_NaN();
+        double ndt_score_threshold = std::numeric_limits<double>::quiet_NaN();
+        double inlier_ratio = std::numeric_limits<double>::quiet_NaN();
+        double inlier_ratio_threshold = std::numeric_limits<double>::quiet_NaN();
+        std::string source_type = "SINGLE_FRAME";
+        int source_scan_count = 0;
+        double source_time_span_sec = 0.0;
+        double init_to_ndt_xy = std::numeric_limits<double>::quiet_NaN();
+        double init_to_ndt_yaw_deg = std::numeric_limits<double>::quiet_NaN();
+        double init_to_ndt_z = std::numeric_limits<double>::quiet_NaN();
+        double loop_chi2 = std::numeric_limits<double>::quiet_NaN();
+        double rk_loop_th = std::numeric_limits<double>::quiet_NaN();
+        std::string adjacent_pose_gate_result;
+        std::string adjacent_pose_gate_reject_reason;
+        std::string shape_gate_result;
+        std::string shape_gate_reject_reason;
+        double shape_local_max_delta_max_m = std::numeric_limits<double>::quiet_NaN();
+        double shape_local_max_delta_p95_m = std::numeric_limits<double>::quiet_NaN();
+        double shape_local_max_delta_mean_m = std::numeric_limits<double>::quiet_NaN();
+    };
+
     struct CandidateClusterRow {
         unsigned long curr_kf_id = 0;
         int raw_candidate_count = 0;
@@ -316,6 +352,7 @@ class LoopDebugLogger {
         bool accepted = false;
         bool pose_writeback = false;
         bool edge_committed = false;
+        bool pgo_edge_accepted = false;
     };
 
     struct PgoImpactRow {
@@ -391,6 +428,7 @@ class LoopDebugLogger {
     void WriteMatch(const MatchRow& row);
     void WriteSourceAccum(const SourceAccumRow& row);
     void WriteGateDecision(const GateRow& row);
+    void WriteFinalEvent(const FinalEventRow& row);
     void WriteCandidateCluster(const CandidateClusterRow& row);
     void WriteInitToNdt(const InitToNdtRow& row);
     void WriteEdge(const EdgeRow& row);
@@ -421,6 +459,7 @@ class LoopDebugLogger {
     std::ofstream matches_;
     std::ofstream source_accum_;
     std::ofstream gates_;
+    std::ofstream final_events_;
     std::ofstream candidate_clusters_;
     std::ofstream init_to_ndt_;
     std::ofstream edges_;
@@ -431,6 +470,7 @@ class LoopDebugLogger {
     int matches_since_flush_ = 0;
     int source_accum_since_flush_ = 0;
     int gates_since_flush_ = 0;
+    int final_events_since_flush_ = 0;
     int candidate_clusters_since_flush_ = 0;
     int init_to_ndt_since_flush_ = 0;
     int edges_since_flush_ = 0;
@@ -442,6 +482,7 @@ class LoopDebugLogger {
     long match_count_ = 0;
     long accepted_count_ = 0;
     long rejected_count_ = 0;
+    long final_event_count_ = 0;
     long suspect_count_ = 0;
 };
 

@@ -134,6 +134,7 @@ class LoopClosing {
         bool debug_log_candidates_ = true;
         bool debug_log_matches_ = true;
         bool debug_log_gate_decisions_ = true;
+        bool debug_log_raw_candidate_gates_ = false;
         bool debug_log_pgo_impact_ = true;
         int debug_flush_every_n_ = 1;
         int debug_max_suspects_ = 100;
@@ -252,7 +253,7 @@ class LoopClosing {
     void ComputeForCandidate(LoopCandidate& c);
 
     CloudPtr BuildNdtSourceCloud(const Keyframe::Ptr& curr_kf, LoopCandidate& c);
-    void ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const CloudPtr& target_world,
+    long ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const CloudPtr& target_world,
                                       const CloudPtr& source_lidar, const SE3& T_w_hist,
                                       const SE3& T_w_source_initial, const SE3& T_w_source_ndt);
 
@@ -277,7 +278,8 @@ class LoopClosing {
                          int curr_kf_candidate_count = -1,
                          bool selected_for_pgo_trial = false,
                          bool suppressed_by_same_curr_kf_nms = false,
-                         const AdjacentPoseDeformationStats* adjacent_pose_stats = nullptr);
+                         const AdjacentPoseDeformationStats* adjacent_pose_stats = nullptr,
+                         double loop_chi2 = std::numeric_limits<double>::quiet_NaN());
 
     Options options_;
 

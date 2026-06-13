@@ -86,6 +86,7 @@ loop_closing:
   debug_log_candidates: true
   debug_log_matches: true
   debug_log_gate_decisions: true
+  loop_debug_log_raw_candidate_gates: false # 是否记录每个历史 keyframe 的原始候选/距离门控；默认关闭以避免 GB 级 CSV
   debug_log_pgo_impact: true
   debug_flush_every_n: 1
   debug_max_suspects: 100

@@ -96,6 +96,7 @@ bool LoopDebugLogger::Init(const std::string& config_path, const Options& option
         candidates_.open(output_dir_ + "/loop_candidates.csv", std::ios::out | std::ios::trunc);
         matches_.open(output_dir_ + "/loop_matches.csv", std::ios::out | std::ios::trunc);
         gates_.open(output_dir_ + "/loop_gate_decisions.csv", std::ios::out | std::ios::trunc);
+        final_events_.open(output_dir_ + "/loop_final_events.csv", std::ios::out | std::ios::trunc);
         candidate_clusters_.open(output_dir_ + "/loop_candidate_clusters.csv", std::ios::out | std::ios::trunc);
         init_to_ndt_.open(output_dir_ + "/loop_init_to_ndt_debug.csv", std::ios::out | std::ios::trunc);
         edges_.open(output_dir_ + "/loop_edges.csv", std::ios::out | std::ios::trunc);
@@ -108,8 +109,9 @@ bool LoopDebugLogger::Init(const std::string& config_path, const Options& option
             source_accum_.open(output_dir_ + "/" + source_accum_csv, std::ios::out | std::ios::trunc);
         }
         if (!keyframes_.is_open() || !candidates_.is_open() || !matches_.is_open() || !gates_.is_open() ||
-            !candidate_clusters_.is_open() || !init_to_ndt_.is_open() || !edges_.is_open() || !pgo_.is_open() ||
-            !suspects_.is_open() || (options_.source_scan_accum_debug_enable && !source_accum_.is_open())) {
+            !final_events_.is_open() || !candidate_clusters_.is_open() || !init_to_ndt_.is_open() ||
+            !edges_.is_open() || !pgo_.is_open() || !suspects_.is_open() ||
+            (options_.source_scan_accum_debug_enable && !source_accum_.is_open())) {
             LOG(WARNING) << "failed to open loop debug logs under " << output_dir_;
             return false;
         }
@@ -153,12 +155,21 @@ bool LoopDebugLogger::Init(const std::string& config_path, const Options& option
                   "shape_local_max_delta_p95_m,shape_local_max_delta_mean_m,shape_worst_endpoint,"
                   "shape_worst_window_start_kf_id,shape_worst_window_end_kf_id,"
                   "shape_gate_result,shape_gate_reject_reason\n";
+        final_events_ << "event_id,curr_kf_id,hist_kf_id,candidate_rank,curr_kf_candidate_count,"
+                         "final_status,reject_reason_primary,reject_reason_secondary,"
+                         "selected_for_pgo_trial,suppressed_by_same_curr_kf_nms,committed,pose_writeback,"
+                         "edge_committed,ndt_score,ndt_score_threshold,inlier_ratio,inlier_ratio_threshold,"
+                         "source_type,source_scan_count,source_time_span_sec,init_to_ndt_xy,"
+                         "init_to_ndt_yaw_deg,init_to_ndt_z,loop_chi2,rk_loop_th,"
+                         "adjacent_pose_gate_result,adjacent_pose_gate_reject_reason,"
+                         "shape_gate_result,shape_gate_reject_reason,shape_local_max_delta_max_m,"
+                         "shape_local_max_delta_p95_m,shape_local_max_delta_mean_m\n";
         candidate_clusters_ << "curr_kf_id,raw_candidate_count,clustered_candidate_count,cluster_id,hist_kf_id,"
                                "hist_pose_x,hist_pose_y,selected_or_suppressed,suppress_reason\n";
         init_to_ndt_ << "curr_kf_id,hist_kf_id,ndt_score,converged,init_to_ndt_xy,init_to_ndt_yaw_deg,"
-                        "init_to_ndt_z,accepted,reject_reason\n";
+                        "init_to_ndt_z,accepted,reject_reason,init_to_ndt_accepted\n";
         edges_ << "curr_kf_id,hist_kf_id,dx,dy,dz,dyaw_deg,information_diag,loop_chi2,rk_loop_th,accepted,"
-                  "pose_writeback,edge_committed\n";
+                  "pose_writeback,edge_committed,pgo_edge_accepted\n";
         pgo_ << "curr_kf_id,hist_kf_id,loop_chi2_before,loop_chi2_after,rk_loop_th,pgo_error_before,"
                 "pgo_error_after,pgo_error_delta,max_pose_delta_all_m,max_pose_delta_all_yaw_deg,"
                 "max_pose_delta_near_loop_m,max_pose_delta_near_loop_yaw_deg,mean_pose_delta_near_loop_m,"
@@ -357,6 +368,36 @@ void LoopDebugLogger::WriteCandidateCluster(const CandidateClusterRow& row) {
     }
 }
 
+void LoopDebugLogger::WriteFinalEvent(const FinalEventRow& row) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!enabled_ || !final_events_.is_open()) return;
+    try {
+        final_events_ << row.event_id << "," << row.curr_kf_id << "," << row.hist_kf_id << ","
+                      << row.candidate_rank << "," << row.curr_kf_candidate_count << ","
+                      << CsvEscape(row.final_status) << "," << CsvEscape(row.reject_reason_primary) << ","
+                      << CsvEscape(row.reject_reason_secondary) << ","
+                      << FormatBool(row.selected_for_pgo_trial) << ","
+                      << FormatBool(row.suppressed_by_same_curr_kf_nms) << ","
+                      << FormatBool(row.committed) << "," << FormatBool(row.pose_writeback) << ","
+                      << FormatBool(row.edge_committed) << "," << FormatDouble(row.ndt_score) << ","
+                      << FormatDouble(row.ndt_score_threshold) << "," << FormatDouble(row.inlier_ratio) << ","
+                      << FormatDouble(row.inlier_ratio_threshold) << "," << CsvEscape(row.source_type) << ","
+                      << row.source_scan_count << "," << FormatDouble(row.source_time_span_sec) << ","
+                      << FormatDouble(row.init_to_ndt_xy) << "," << FormatDouble(row.init_to_ndt_yaw_deg) << ","
+                      << FormatDouble(row.init_to_ndt_z) << "," << FormatDouble(row.loop_chi2) << ","
+                      << FormatDouble(row.rk_loop_th) << "," << CsvEscape(row.adjacent_pose_gate_result) << ","
+                      << CsvEscape(row.adjacent_pose_gate_reject_reason) << ","
+                      << CsvEscape(row.shape_gate_result) << "," << CsvEscape(row.shape_gate_reject_reason) << ","
+                      << FormatDouble(row.shape_local_max_delta_max_m) << ","
+                      << FormatDouble(row.shape_local_max_delta_p95_m) << ","
+                      << FormatDouble(row.shape_local_max_delta_mean_m) << "\n";
+        final_event_count_++;
+        FlushIfNeeded(final_events_, final_events_since_flush_);
+    } catch (...) {
+        LOG(WARNING) << "failed to write loop final event debug row";
+    }
+}
+
 void LoopDebugLogger::WriteInitToNdt(const InitToNdtRow& row) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (!enabled_ || !init_to_ndt_.is_open()) return;
@@ -364,7 +405,8 @@ void LoopDebugLogger::WriteInitToNdt(const InitToNdtRow& row) {
         init_to_ndt_ << row.curr_kf_id << "," << row.hist_kf_id << "," << FormatDouble(row.ndt_score) << ","
                      << FormatBool(row.converged) << "," << FormatDouble(row.init_to_ndt_xy) << ","
                      << FormatDouble(row.init_to_ndt_yaw_deg) << "," << FormatDouble(row.init_to_ndt_z) << ","
-                     << FormatBool(row.accepted) << "," << CsvEscape(row.reject_reason) << "\n";
+                     << FormatBool(row.accepted) << "," << CsvEscape(row.reject_reason) << ","
+                     << FormatBool(row.accepted) << "\n";
         FlushIfNeeded(init_to_ndt_, init_to_ndt_since_flush_);
     } catch (...) {
         LOG(WARNING) << "failed to write loop init-to-NDT debug row";
@@ -379,7 +421,8 @@ void LoopDebugLogger::WriteEdge(const EdgeRow& row) {
                << FormatDouble(row.dy) << "," << FormatDouble(row.dz) << "," << FormatDouble(row.dyaw_deg) << ","
                << CsvEscape(row.information_diag) << "," << FormatDouble(row.loop_chi2) << ","
                << FormatDouble(row.rk_loop_th) << "," << FormatBool(row.accepted) << ","
-               << FormatBool(row.pose_writeback) << "," << FormatBool(row.edge_committed) << "\n";
+               << FormatBool(row.pose_writeback) << "," << FormatBool(row.edge_committed) << ","
+               << FormatBool(row.pgo_edge_accepted) << "\n";
         FlushIfNeeded(edges_, edges_since_flush_);
     } catch (...) {
         LOG(WARNING) << "failed to write loop edge debug row";
@@ -467,6 +510,7 @@ void LoopDebugLogger::Finish() {
         if (candidates_.is_open()) candidates_.close();
         if (matches_.is_open()) matches_.close();
         if (gates_.is_open()) gates_.close();
+        if (final_events_.is_open()) final_events_.close();
         if (candidate_clusters_.is_open()) candidate_clusters_.close();
         if (init_to_ndt_.is_open()) init_to_ndt_.close();
         if (edges_.is_open()) edges_.close();
@@ -679,6 +723,8 @@ void LoopDebugLogger::WriteMetadata(const std::string& config_path, const Option
         << FormatDouble(options.adjacent_shape_max_delta_mean_m) << "\n";
     out << "    },\n";
     out << "    \"debug_log_enable\": " << FormatBool(options.enable) << ",\n";
+    out << "    \"loop_debug_log_raw_candidate_gates\": "
+        << FormatBool(options.log_raw_candidate_gates) << ",\n";
     out << "    \"debug_log_dir\": \"" << JsonEscape(output_dir_) << "\"\n";
     out << "  },\n";
     out << "  \"keyframe\": {\n";
@@ -833,10 +879,13 @@ void LoopDebugLogger::WriteSummary() {
         << FormatDouble(options_.adjacent_shape_max_delta_max_m) << "\n";
     out << "- lidar_auto_adjacent_pose_gate.max_shape_delta_mean_m: "
         << FormatDouble(options_.adjacent_shape_max_delta_mean_m) << "\n\n";
+    out << "- loop_debug_log_raw_candidate_gates: "
+        << FormatBool(options_.log_raw_candidate_gates) << "\n\n";
     out << "## Counts\n\n";
     out << "- keyframes: " << keyframe_count_ << "\n";
     out << "- candidates: " << candidate_count_ << "\n";
     out << "- matches: " << match_count_ << "\n";
+    out << "- final_events: " << final_event_count_ << "\n";
     out << "- accepted: " << accepted_count_ << "\n";
     out << "- rejected: " << rejected_count_ << "\n";
     out << "- suspects_written: " << suspect_count_ << "\n\n";

@@ -50,6 +50,7 @@ struct LoopCandidate {
     double match_time_ms_ = std::numeric_limits<double>::quiet_NaN();
     int submap_kf_count_ = 0;
     int candidate_rank_ = -1;
+    long alignment_event_id_ = -1;
     int hist_cluster_id_ = -1;
     int hist_cluster_rank_ = -1;
     int same_curr_kf_candidate_count_ = -1;

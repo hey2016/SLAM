@@ -620,6 +620,54 @@ void FillAdjacentGateFields(LoopDebugLogger::GateRow& row,
     row.shape_gate_reject_reason = stats.shape_gate_reject_reason;
 }
 
+LoopDebugLogger::FinalEventRow MakeFinalEventRow(const LoopCandidate& c,
+                                                 const LoopDebugLogger::GateRow& gate,
+                                                 const LoopClosing::Options& options,
+                                                 double loop_chi2) {
+    LoopDebugLogger::FinalEventRow row;
+    row.event_id = c.alignment_event_id_;
+    row.curr_kf_id = c.idx2_;
+    row.hist_kf_id = c.idx1_;
+    row.candidate_rank = c.candidate_rank_;
+    row.curr_kf_candidate_count = gate.curr_kf_candidate_count;
+    row.final_status = gate.final_status;
+    row.reject_reason_primary = gate.reject_reason_primary;
+    row.reject_reason_secondary = gate.reject_reason_secondary;
+    row.selected_for_pgo_trial = gate.selected_for_pgo_trial;
+    row.suppressed_by_same_curr_kf_nms = gate.suppressed_by_same_curr_kf_nms;
+    row.committed = gate.committed;
+    row.pose_writeback = gate.pose_writeback;
+    row.edge_committed = gate.edge_committed;
+    row.ndt_score = c.ndt_score_;
+    row.ndt_score_threshold = options.ndt_score_th_;
+    row.inlier_ratio = c.ndt_inlier_ratio_;
+    row.inlier_ratio_threshold = options.ndt_inlier_ratio_th_;
+    row.source_type = c.source_type_;
+    row.source_scan_count = c.source_scan_count_;
+    row.source_time_span_sec = c.source_time_span_sec_;
+    row.init_to_ndt_xy = c.init_to_ndt_xy_m_;
+    row.init_to_ndt_yaw_deg = c.init_to_ndt_yaw_deg_;
+    row.init_to_ndt_z = c.init_to_ndt_z_m_;
+    row.loop_chi2 = loop_chi2;
+    row.rk_loop_th = options.rk_loop_th_;
+    row.adjacent_pose_gate_result = gate.adjacent_pose_gate_result;
+    row.adjacent_pose_gate_reject_reason = gate.adjacent_pose_gate_reject_reason;
+    row.shape_gate_result = gate.shape_gate_result;
+    row.shape_gate_reject_reason = gate.shape_gate_reject_reason;
+    row.shape_local_max_delta_max_m = gate.shape_local_max_delta_max_m;
+    row.shape_local_max_delta_p95_m = gate.shape_local_max_delta_p95_m;
+    row.shape_local_max_delta_mean_m = gate.shape_local_max_delta_mean_m;
+    return row;
+}
+
+bool ShouldWriteFinalEvent(const std::string& final_status) {
+    if (final_status.empty() || final_status == "candidate_only") {
+        return false;
+    }
+    return final_status == "accepted" || final_status == "accepted_high_risk" ||
+           final_status == "committed_low_risk" || final_status.find("rejected_") == 0;
+}
+
 }  // namespace
 
 LoopClosing::AdjacentPoseDeformationStats LoopClosing::ComputeAdjacentPoseDeformationStats(
@@ -871,29 +919,22 @@ bool LoopClosing::EvaluateAdjacentPoseGate(const Options& options, AdjacentPoseD
             stats->shape_gate_result = options.adjacent_shape_deformation_reject_on_violation_
                                            ? "reject"
                                            : "monitor_only_shape_deformation_violation";
-            if (stats->reject_reason.empty()) {
-                stats->reject_reason = stats->shape_gate_reject_reason;
-            }
         }
     }
 
-    if (stats->reject_reason.empty()) {
+    const bool adjacent_violation = !stats->reject_reason.empty();
+    const bool hard_shape_violation = stats->shape_gate_result == "reject" &&
+                                      !stats->shape_gate_reject_reason.empty();
+
+    if (!adjacent_violation) {
         stats->gate_result = "pass";
-        return false;
+    } else {
+        stats->gate_result = options.adjacent_pose_gate_reject_on_violation_
+                                 ? "reject"
+                                 : "monitor_only_adjacent_pose_violation";
     }
-    if (stats->shape_gate_reject_reason == stats->reject_reason &&
-        !options.adjacent_shape_deformation_reject_on_violation_) {
-        stats->gate_result = "monitor_only_shape_deformation_violation";
-        return false;
-    }
-    if (stats->shape_gate_reject_reason == stats->reject_reason &&
-        options.adjacent_shape_deformation_reject_on_violation_) {
-        stats->gate_result = "reject";
-        return true;
-    }
-    stats->gate_result = options.adjacent_pose_gate_reject_on_violation_ ? "reject" :
-                                                                  "monitor_only_adjacent_pose_violation";
-    return options.adjacent_pose_gate_reject_on_violation_;
+    return (adjacent_violation && options.adjacent_pose_gate_reject_on_violation_) ||
+           hard_shape_violation;
 }
 
 LoopClosing::~LoopClosing() {
@@ -1400,6 +1441,9 @@ void LoopClosing::Init(const std::string yaml_path) {
             options_.debug_log_matches_ = YamlGetOr<bool>(loop, "debug_log_matches", options_.debug_log_matches_);
             options_.debug_log_gate_decisions_ =
                 YamlGetOr<bool>(loop, "debug_log_gate_decisions", options_.debug_log_gate_decisions_);
+            options_.debug_log_raw_candidate_gates_ =
+                YamlGetOr<bool>(loop, "loop_debug_log_raw_candidate_gates",
+                                options_.debug_log_raw_candidate_gates_);
             options_.debug_log_pgo_impact_ =
                 YamlGetOr<bool>(loop, "debug_log_pgo_impact", options_.debug_log_pgo_impact_);
             options_.debug_flush_every_n_ = YamlGetOr<int>(loop, "debug_flush_every_n", options_.debug_flush_every_n_);
@@ -1527,6 +1571,7 @@ void LoopClosing::Init(const std::string yaml_path) {
               << ", adjacent_shape_max_delta_p95_m=" << options_.adjacent_shape_max_delta_p95_m_
               << ", adjacent_shape_max_delta_max_m=" << options_.adjacent_shape_max_delta_max_m_
               << ", adjacent_shape_max_delta_mean_m=" << options_.adjacent_shape_max_delta_mean_m_
+              << ", loop_debug_log_raw_candidate_gates=" << options_.debug_log_raw_candidate_gates_
               << ", debug_loop_alignment_live_enable=" << options_.debug_loop_alignment_live_enable_
               << ", debug_loop_alignment_live_dir=" << options_.debug_loop_alignment_live_dir_
               << ", debug_loop_alignment_live_max_points=" << options_.debug_loop_alignment_live_max_points_
@@ -1541,6 +1586,7 @@ void LoopClosing::Init(const std::string yaml_path) {
         dbg.log_candidates = options_.debug_log_candidates_;
         dbg.log_matches = options_.debug_log_matches_;
         dbg.log_gate_decisions = options_.debug_log_gate_decisions_;
+        dbg.log_raw_candidate_gates = options_.debug_log_raw_candidate_gates_;
         dbg.log_pgo_impact = options_.debug_log_pgo_impact_;
         dbg.flush_every_n = options_.debug_flush_every_n_;
         dbg.max_suspects = options_.debug_max_suspects_;
@@ -2177,18 +2223,18 @@ CloudPtr LoopClosing::BuildNdtSourceCloud(const Keyframe::Ptr& curr_kf, LoopCand
     return single_frame;
 }
 
-void LoopClosing::ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const CloudPtr& target_world,
+long LoopClosing::ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const CloudPtr& target_world,
                                                const CloudPtr& source_lidar, const SE3& T_w_hist,
                                                const SE3& T_w_source_initial, const SE3& T_w_source_ndt) {
     if (!options_.debug_loop_alignment_live_enable_ || !options_.debug_loop_alignment_live_save_points_) {
-        return;
+        return -1;
     }
     if (!target_world || !source_lidar || target_world->empty() || source_lidar->empty()) {
-        return;
+        return -1;
     }
     if (options_.debug_loop_alignment_live_max_events_ > 0 &&
         static_cast<int>(loop_alignment_event_id_) >= options_.debug_loop_alignment_live_max_events_) {
-        return;
+        return -1;
     }
 
     try {
@@ -2214,7 +2260,7 @@ void LoopClosing::ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const Clo
         std::ofstream points(points_path, std::ios::out | std::ios::trunc);
         if (!points.is_open()) {
             LOG(WARNING) << "failed to open loop alignment points file: " << points_path;
-            return;
+            return -1;
         }
         points << std::fixed << std::setprecision(6);
         points << "cloud,x,y,z\n";
@@ -2250,7 +2296,7 @@ void LoopClosing::ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const Clo
         std::ofstream events(events_path, std::ios::out | std::ios::app);
         if (!events.is_open()) {
             LOG(WARNING) << "failed to open loop alignment events file: " << events_path;
-            return;
+            return -1;
         }
         if (need_header) {
             events << "event_id,curr_kf_id,hist_kf_id,source_type,ndt_score,converged,points_file,bev_png,"
@@ -2265,11 +2311,13 @@ void LoopClosing::ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const Clo
                << c.source_scan_count_ << "," << c.source_time_span_sec_ << ","
                << c.source_points_before_downsample_ << "," << c.source_points_after_downsample_ << "\n";
         events.flush();
+        return static_cast<long>(event_id);
     } catch (const std::exception& e) {
         LOG(WARNING) << "failed to export loop alignment live debug: " << e.what();
     } catch (...) {
         LOG(WARNING) << "failed to export loop alignment live debug: unknown exception";
     }
+    return -1;
 }
 
 void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
@@ -2391,7 +2439,8 @@ void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
     c.init_to_ndt_xy_m_ = init_to_ndt_t.head<2>().norm();
     c.init_to_ndt_yaw_deg_ = std::fabs(HeadingYawDiffDeg(ndt_pose, init_pose));
     c.init_to_ndt_z_m_ = std::fabs(init_to_ndt_t.z());
-    ExportLoopAlignmentLiveDebug(c, submap_kf1, submap_kf2, kf1->GetOptPose(), init_pose, ndt_pose);
+    c.alignment_event_id_ =
+        ExportLoopAlignmentLiveDebug(c, submap_kf1, submap_kf2, kf1->GetOptPose(), init_pose, ndt_pose);
     if (loop_debug_logger_) {
         loop_debug_logger_->WriteMatch(MakeMatchRow(c, options_));
         loop_debug_logger_->WriteSourceAccum(MakeSourceAccumRow(c, options_));
@@ -2812,10 +2861,19 @@ void LoopClosing::PoseOptimization() {
         }
         if (loop_edge.accepted && adjacent_gate_reject) {
             loop_edge.accepted = false;
-            loop_edge.reject_reason_primary = "pgo_adjacent_pose_deformation";
+            loop_edge.reject_reason_primary =
+                loop_edge.adjacent_pose_stats.shape_gate_result == "reject" &&
+                        loop_edge.adjacent_pose_stats.reject_reason.empty()
+                    ? "pgo_shape_deformation"
+                    : "pgo_adjacent_pose_deformation";
             if (options_.verbose_) {
-                LOG(INFO) << "adjacent pose reject after trial PGO curr=" << c.idx2_ << " hist=" << c.idx1_
-                          << " reason=" << loop_edge.adjacent_pose_stats.reject_reason
+                const std::string deformation_reason =
+                    loop_edge.reject_reason_primary == "pgo_shape_deformation"
+                        ? loop_edge.adjacent_pose_stats.shape_gate_reject_reason
+                        : loop_edge.adjacent_pose_stats.reject_reason;
+                LOG(INFO) << "pose deformation reject after trial PGO curr=" << c.idx2_ << " hist=" << c.idx1_
+                          << " primary=" << loop_edge.reject_reason_primary
+                          << " reason=" << deformation_reason
                           << " max_xy=" << loop_edge.adjacent_pose_stats.max_delta_xy_m << "/"
                           << options_.adjacent_pose_gate_max_delta_xy_m_
                           << " p95_xy=" << loop_edge.adjacent_pose_stats.p95_delta_xy_m << "/"
@@ -2917,6 +2975,8 @@ void LoopClosing::PoseOptimization() {
                     info.loop_status = "rejected_risk_combo";
                 } else if (loop_edge.reject_reason_primary == "pgo_impact_too_large") {
                     info.loop_status = "rejected_pgo_impact";
+                } else if (loop_edge.reject_reason_primary == "pgo_shape_deformation") {
+                    info.loop_status = "rejected_shape_deformation";
                 } else if (loop_edge.reject_reason_primary == "pgo_adjacent_pose_deformation") {
                     info.loop_status = "rejected_adjacent_pose";
                 } else {
@@ -2948,6 +3008,7 @@ void LoopClosing::PoseOptimization() {
             edge_row.accepted = accepted;
             edge_row.pose_writeback = current_loop_edges[i].pose_writeback;
             edge_row.edge_committed = current_loop_edges[i].edge_committed;
+            edge_row.pgo_edge_accepted = accepted;
             loop_debug_logger_->WriteEdge(edge_row);
 
             auto pgo_row = current_loop_edges[i].pgo_impact;
@@ -2964,6 +3025,8 @@ void LoopClosing::PoseOptimization() {
                 final_status = "rejected_risk_combo";
             } else if (current_loop_edges[i].reject_reason_primary == "pgo_impact_too_large") {
                 final_status = "rejected_pgo_impact";
+            } else if (current_loop_edges[i].reject_reason_primary == "pgo_shape_deformation") {
+                final_status = "rejected_shape_deformation";
             } else if (current_loop_edges[i].reject_reason_primary == "pgo_adjacent_pose_deformation") {
                 final_status = "rejected_adjacent_pose";
             } else {
@@ -2985,7 +3048,8 @@ void LoopClosing::PoseOptimization() {
                             current_loop_edges[i].pgo_impact.affected_kf_count,
                             current_loop_edges[i].pgo_impact.local_straightness_delta,
                             c.same_curr_kf_candidate_count_, true, false,
-                            &current_loop_edges[i].adjacent_pose_stats);
+                            &current_loop_edges[i].adjacent_pose_stats,
+                            current_loop_edges[i].chi2_after);
             if ((accepted || final_status == "rejected_risk_combo") && risk_score > 0.0) {
                 const auto hist = all_keyframes_.at(c.idx1_);
                 const auto cur = all_keyframes_.at(c.idx2_);
@@ -3043,6 +3107,7 @@ void LoopClosing::LogKeyframe(const Keyframe::Ptr& kf) {
 void LoopClosing::LogCandidateGate(const Keyframe::Ptr& hist_kf, bool pass_id_gap, bool pass_closest_id,
                                    bool pass_range, int candidate_rank) {
     if (!loop_debug_logger_ || !hist_kf || !cur_kf_) return;
+    if (!options_.debug_log_raw_candidate_gates_) return;
     auto row = MakeCandidateRow(hist_kf, cur_kf_, options_, candidate_rank);
     row.pass_id_gap = pass_id_gap;
     row.pass_closest_id = pass_closest_id;
@@ -3099,7 +3164,8 @@ void LoopClosing::LogGateDecision(const LoopCandidate& c, const std::string& fin
                                   int curr_kf_candidate_count,
                                   bool selected_for_pgo_trial,
                                   bool suppressed_by_same_curr_kf_nms,
-                                  const AdjacentPoseDeformationStats* adjacent_pose_stats) {
+                                  const AdjacentPoseDeformationStats* adjacent_pose_stats,
+                                  double loop_chi2) {
     if (!loop_debug_logger_) return;
     LoopDebugLogger::GateRow gate;
     gate.curr_kf_id = c.idx2_;
@@ -3152,6 +3218,9 @@ void LoopClosing::LogGateDecision(const LoopCandidate& c, const std::string& fin
     gate.suppressed_by_same_curr_kf_nms = suppressed_by_same_curr_kf_nms;
     gate.candidate_rank = c.candidate_rank_;
     loop_debug_logger_->WriteGateDecision(gate);
+    if (ShouldWriteFinalEvent(final_status)) {
+        loop_debug_logger_->WriteFinalEvent(MakeFinalEventRow(c, gate, options_, loop_chi2));
+    }
 }
 
 }  // namespace lightning
