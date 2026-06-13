@@ -61,13 +61,6 @@ class LoopClosing {
         bool same_curr_kf_fallback_enable_ = true;
         int same_curr_kf_fallback_top_k_ = 3;
 
-        bool lidar_auto_source_accumulation_enable_ = false;
-        int source_accumulation_frame_count_ = 3;
-        int source_accumulation_min_frames_ = 2;
-        double source_accumulation_max_time_span_sec_ = 1.0;
-        double source_accumulation_voxel_leaf_size_m_ = 0.0;
-        bool source_accumulation_debug_log_ = false;
-
         bool source_scan_accum_enable_ = false;
         int source_scan_accum_max_scans_ = 5;
         int source_scan_accum_min_scans_ = 3;

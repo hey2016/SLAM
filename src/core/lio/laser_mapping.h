@@ -52,11 +52,6 @@ class LaserMapping {
         bool proj_kfs_ = false;
         int max_proj_kfs_ = 5;
 
-        bool loop_source_accum_enable_ = false;
-        int loop_source_accum_frame_count_ = 3;
-        int loop_source_accum_min_frames_ = 2;
-        double loop_source_accum_max_time_span_sec_ = 1.0;
-
         bool source_scan_accum_enable_ = false;
         int source_scan_accum_max_scans_ = 5;
         int source_scan_accum_min_scans_ = 3;
@@ -232,8 +227,6 @@ class LaserMapping {
     /// 将附近的关键帧投影至cloud中
     void ProjectKFs(CloudPtr cloud, int size_limit = 1000);
 
-    void CacheLoopSourceScanFrame();
-
     void CacheSourceScanForLoopClosing();
 
    private:
@@ -258,7 +251,6 @@ class LaserMapping {
     std::vector<Keyframe::Ptr> all_keyframes_;
     Keyframe::Ptr last_kf_ = nullptr;
     int kf_id_ = 0;
-    std::deque<Keyframe::SourceScanFrame> loop_source_scan_history_;
     mutable std::mutex source_scan_cache_mutex_;
     std::deque<RawScanCacheItem> source_scan_cache_;
     int64_t source_scan_cache_seq_ = 0;

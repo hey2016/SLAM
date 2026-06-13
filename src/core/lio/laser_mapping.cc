@@ -125,15 +125,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         p_imu_->SetUseIMUFilter(use_imu_filter);
         options_.proj_kfs_ = yaml["fasterlio"]["proj_kfs"].as<bool>();
 
-        const auto source_accum = yaml["loop_closing"]["lidar_auto_source_accumulation"];
-        options_.loop_source_accum_enable_ =
-            YamlGetOr<bool>(source_accum, "enable", options_.loop_source_accum_enable_);
-        options_.loop_source_accum_frame_count_ =
-            YamlGetOr<int>(source_accum, "frame_count", options_.loop_source_accum_frame_count_);
-        options_.loop_source_accum_min_frames_ =
-            YamlGetOr<int>(source_accum, "min_frames", options_.loop_source_accum_min_frames_);
-        options_.loop_source_accum_max_time_span_sec_ =
-            YamlGetOr<double>(source_accum, "max_time_span_sec", options_.loop_source_accum_max_time_span_sec_);
         const auto loop = yaml["loop_closing"];
         options_.source_scan_accum_enable_ =
             YamlGetOr<bool>(loop, "source_scan_accum_enable", options_.source_scan_accum_enable_);
@@ -170,25 +161,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         return false;
     }
 
-    if (options_.loop_source_accum_frame_count_ < 3 || options_.loop_source_accum_frame_count_ > 5) {
-        LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.frame_count="
-                     << options_.loop_source_accum_frame_count_ << ", clamp to [3,5]";
-        options_.loop_source_accum_frame_count_ =
-            std::min(5, std::max(3, options_.loop_source_accum_frame_count_));
-    }
-    if (options_.loop_source_accum_min_frames_ < 1 ||
-        options_.loop_source_accum_min_frames_ > options_.loop_source_accum_frame_count_) {
-        LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.min_frames="
-                     << options_.loop_source_accum_min_frames_ << ", fallback to "
-                     << std::min(2, options_.loop_source_accum_frame_count_);
-        options_.loop_source_accum_min_frames_ = std::min(2, options_.loop_source_accum_frame_count_);
-    }
-    if (!std::isfinite(options_.loop_source_accum_max_time_span_sec_) ||
-        options_.loop_source_accum_max_time_span_sec_ < 0.0) {
-        LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.max_time_span_sec="
-                     << options_.loop_source_accum_max_time_span_sec_ << ", fallback to 1.0";
-        options_.loop_source_accum_max_time_span_sec_ = 1.0;
-    }
     if (options_.source_scan_accum_max_scans_ < 1 || options_.source_scan_accum_max_scans_ > 20) {
         LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_scans="
                      << options_.source_scan_accum_max_scans_ << ", clamp to [1,20]";
@@ -289,10 +261,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     p_imu_->SetAccCov(Vec3d(acc_cov, acc_cov, acc_cov));
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu_->SetAccBiasCov(Vec3d(b_acc_cov, b_acc_cov, b_acc_cov));
-    LOG(INFO) << "loop source accumulation params: enable=" << options_.loop_source_accum_enable_
-              << ", frame_count=" << options_.loop_source_accum_frame_count_
-              << ", min_frames=" << options_.loop_source_accum_min_frames_
-              << ", max_time_span_sec=" << options_.loop_source_accum_max_time_span_sec_;
     LOG(INFO) << "source scan cache params: enable=" << options_.source_scan_accum_enable_
               << ", max_scans=" << options_.source_scan_accum_max_scans_
               << ", min_scans=" << options_.source_scan_accum_min_scans_
@@ -444,7 +412,6 @@ bool LaserMapping::Run() {
 
     state_point_ = kf_.GetX();
     state_point_.timestamp_ = measures_.lidar_end_time_;
-    CacheLoopSourceScanFrame();
     CacheSourceScanForLoopClosing();
 
     const double delta_translation = (pred_state.pos_ - state_point_.pos_).norm();
@@ -541,11 +508,6 @@ void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
 
 void LaserMapping::MakeKF() {
     Keyframe::Ptr kf = std::make_shared<Keyframe>(kf_id_++, scan_undistort_, state_point_);
-    if (options_.loop_source_accum_enable_ &&
-        static_cast<int>(loop_source_scan_history_.size()) >= options_.loop_source_accum_min_frames_) {
-        std::vector<Keyframe::SourceScanFrame> frames(loop_source_scan_history_.begin(), loop_source_scan_history_.end());
-        kf->SetSourceScanFrames(frames);
-    }
 
     if (last_kf_) {
         /// opt pose 用之前的递推
@@ -590,32 +552,6 @@ void LaserMapping::MakeKF() {
     // for (auto &kf : proj_kfs_) {
     //     LOG(INFO) << "proj kf: " << kf->GetID();
     // }
-}
-
-void LaserMapping::CacheLoopSourceScanFrame() {
-    if (!options_.loop_source_accum_enable_) {
-        return;
-    }
-    if (!scan_undistort_ || scan_undistort_->empty()) {
-        return;
-    }
-
-    Keyframe::SourceScanFrame frame;
-    frame.cloud.reset(new PointCloudType(*scan_undistort_));
-    frame.pose = state_point_.GetPose();
-    frame.stamp = state_point_.timestamp_;
-    loop_source_scan_history_.push_back(frame);
-
-    while (static_cast<int>(loop_source_scan_history_.size()) > options_.loop_source_accum_frame_count_) {
-        loop_source_scan_history_.pop_front();
-    }
-    if (options_.loop_source_accum_max_time_span_sec_ > 0.0) {
-        while (!loop_source_scan_history_.empty() &&
-               frame.stamp - loop_source_scan_history_.front().stamp >
-                   options_.loop_source_accum_max_time_span_sec_) {
-            loop_source_scan_history_.pop_front();
-        }
-    }
 }
 
 std::vector<LaserMapping::RawScanCacheItem> LaserMapping::GetSourceScanCacheSnapshot() const {

@@ -256,13 +256,7 @@ loop_closing:
   source_scan_accum_fallback_single: true  # 累积失败时回退旧单帧 source
   source_scan_accum_debug_enable: false    # 是否输出 source 累积调试 CSV
   source_scan_accum_debug_csv: "loop_source_scan_accum_debug.csv" # source 累积调试 CSV 文件名
-  lidar_auto_source_accumulation:
-    enable: false
-    frame_count: 3
-    min_frames: 2
-    max_time_span_sec: 1.0
-    voxel_leaf_size_m: 0.0
-    debug_log: false
+  # legacy: lidar_auto_source_accumulation 已停用；请使用上面的 source_scan_accum_* 配置。
   lidar_auto_pgo_impact_gate:
     enable: false
     max_pose_delta_near_loop_m: 3.0

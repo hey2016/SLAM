@@ -248,17 +248,10 @@ LoopDebugLogger::SourceAccumRow MakeSourceAccumRow(const LoopCandidate& c, const
     row.hist_kf_id = c.idx1_;
     row.enabled = c.source_accum_enabled_;
     row.used = c.source_accum_used_;
-    if (options.source_scan_accum_enable_) {
-        row.configured_frame_count = options.source_scan_accum_max_scans_;
-        row.configured_min_frames = options.source_scan_accum_min_scans_;
-        row.configured_max_time_span_sec = options.source_scan_accum_time_sec_;
-        row.configured_voxel_leaf_size_m = options.source_scan_accum_voxel_leaf_m_;
-    } else {
-        row.configured_frame_count = options.source_accumulation_frame_count_;
-        row.configured_min_frames = options.source_accumulation_min_frames_;
-        row.configured_max_time_span_sec = options.source_accumulation_max_time_span_sec_;
-        row.configured_voxel_leaf_size_m = options.source_accumulation_voxel_leaf_size_m_;
-    }
+    row.configured_frame_count = options.source_scan_accum_max_scans_;
+    row.configured_min_frames = options.source_scan_accum_min_scans_;
+    row.configured_max_time_span_sec = options.source_scan_accum_time_sec_;
+    row.configured_voxel_leaf_size_m = options.source_scan_accum_voxel_leaf_m_;
     row.used_frames = c.source_accum_frames_;
     row.raw_points = c.source_accum_raw_points_;
     row.source_points = c.source_points_;
@@ -966,19 +959,6 @@ void LoopClosing::Init(const std::string yaml_path) {
                 YamlGetOr<bool>(same_curr_nms, "fallback_enable", options_.same_curr_kf_fallback_enable_);
             options_.same_curr_kf_fallback_top_k_ =
                 YamlGetOr<int>(same_curr_nms, "fallback_top_k", options_.same_curr_kf_fallback_top_k_);
-            const auto source_accum = loop["lidar_auto_source_accumulation"];
-            options_.lidar_auto_source_accumulation_enable_ =
-                YamlGetOr<bool>(source_accum, "enable", options_.lidar_auto_source_accumulation_enable_);
-            options_.source_accumulation_frame_count_ =
-                YamlGetOr<int>(source_accum, "frame_count", options_.source_accumulation_frame_count_);
-            options_.source_accumulation_min_frames_ =
-                YamlGetOr<int>(source_accum, "min_frames", options_.source_accumulation_min_frames_);
-            options_.source_accumulation_max_time_span_sec_ =
-                YamlGetOr<double>(source_accum, "max_time_span_sec", options_.source_accumulation_max_time_span_sec_);
-            options_.source_accumulation_voxel_leaf_size_m_ =
-                YamlGetOr<double>(source_accum, "voxel_leaf_size_m", options_.source_accumulation_voxel_leaf_size_m_);
-            options_.source_accumulation_debug_log_ =
-                YamlGetOr<bool>(source_accum, "debug_log", options_.source_accumulation_debug_log_);
             options_.source_scan_accum_enable_ =
                 YamlGetOr<bool>(loop, "source_scan_accum_enable", options_.source_scan_accum_enable_);
             options_.source_scan_accum_max_scans_ =
@@ -1171,31 +1151,6 @@ void LoopClosing::Init(const std::string yaml_path) {
                 LOG(WARNING) << "invalid loop_closing.lidar_auto_same_curr_kf_nms.fallback_top_k="
                              << options_.same_curr_kf_fallback_top_k_ << ", fallback to 1";
                 options_.same_curr_kf_fallback_top_k_ = 1;
-            }
-            if (options_.source_accumulation_frame_count_ < 3 || options_.source_accumulation_frame_count_ > 5) {
-                LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.frame_count="
-                             << options_.source_accumulation_frame_count_ << ", clamp to [3,5]";
-                options_.source_accumulation_frame_count_ =
-                    std::min(5, std::max(3, options_.source_accumulation_frame_count_));
-            }
-            if (options_.source_accumulation_min_frames_ < 1 ||
-                options_.source_accumulation_min_frames_ > options_.source_accumulation_frame_count_) {
-                LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.min_frames="
-                             << options_.source_accumulation_min_frames_ << ", fallback to "
-                             << std::min(2, options_.source_accumulation_frame_count_);
-                options_.source_accumulation_min_frames_ = std::min(2, options_.source_accumulation_frame_count_);
-            }
-            if (!std::isfinite(options_.source_accumulation_max_time_span_sec_) ||
-                options_.source_accumulation_max_time_span_sec_ < 0.0) {
-                LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.max_time_span_sec="
-                             << options_.source_accumulation_max_time_span_sec_ << ", fallback to 1.0";
-                options_.source_accumulation_max_time_span_sec_ = 1.0;
-            }
-            if (!std::isfinite(options_.source_accumulation_voxel_leaf_size_m_) ||
-                options_.source_accumulation_voxel_leaf_size_m_ < 0.0) {
-                LOG(WARNING) << "invalid loop_closing.lidar_auto_source_accumulation.voxel_leaf_size_m="
-                             << options_.source_accumulation_voxel_leaf_size_m_ << ", fallback to 0.0";
-                options_.source_accumulation_voxel_leaf_size_m_ = 0.0;
             }
             if (options_.source_scan_accum_max_scans_ < 1 || options_.source_scan_accum_max_scans_ > 20) {
                 LOG(WARNING) << "invalid loop_closing.source_scan_accum_max_scans="
@@ -1508,12 +1463,6 @@ void LoopClosing::Init(const std::string yaml_path) {
               << ", same_curr_kf_keep_top=" << options_.same_curr_kf_keep_top_
               << ", same_curr_kf_fallback_enable=" << options_.same_curr_kf_fallback_enable_
               << ", same_curr_kf_fallback_top_k=" << options_.same_curr_kf_fallback_top_k_
-              << ", lidar_auto_source_accumulation.enable=" << options_.lidar_auto_source_accumulation_enable_
-              << ", source_accumulation_frame_count=" << options_.source_accumulation_frame_count_
-              << ", source_accumulation_min_frames=" << options_.source_accumulation_min_frames_
-              << ", source_accumulation_max_time_span_sec=" << options_.source_accumulation_max_time_span_sec_
-              << ", source_accumulation_voxel_leaf_size_m=" << options_.source_accumulation_voxel_leaf_size_m_
-              << ", source_accumulation_debug_log=" << options_.source_accumulation_debug_log_
               << ", source_scan_accum_enable=" << options_.source_scan_accum_enable_
               << ", source_scan_accum_max_scans=" << options_.source_scan_accum_max_scans_
               << ", source_scan_accum_min_scans=" << options_.source_scan_accum_min_scans_
@@ -1616,12 +1565,23 @@ void LoopClosing::Init(const std::string yaml_path) {
         dbg.same_curr_kf_keep_top = options_.same_curr_kf_keep_top_;
         dbg.same_curr_kf_fallback_enable = options_.same_curr_kf_fallback_enable_;
         dbg.same_curr_kf_fallback_top_k = options_.same_curr_kf_fallback_top_k_;
-        dbg.lidar_auto_source_accumulation_enable = options_.lidar_auto_source_accumulation_enable_;
-        dbg.source_accumulation_frame_count = options_.source_accumulation_frame_count_;
-        dbg.source_accumulation_min_frames = options_.source_accumulation_min_frames_;
-        dbg.source_accumulation_max_time_span_sec = options_.source_accumulation_max_time_span_sec_;
-        dbg.source_accumulation_voxel_leaf_size_m = options_.source_accumulation_voxel_leaf_size_m_;
-        dbg.source_accumulation_debug_log = options_.source_accumulation_debug_log_;
+        dbg.source_scan_accum_enable = options_.source_scan_accum_enable_;
+        dbg.source_scan_accum_max_scans = options_.source_scan_accum_max_scans_;
+        dbg.source_scan_accum_min_scans = options_.source_scan_accum_min_scans_;
+        dbg.source_scan_accum_time_sec = options_.source_scan_accum_time_sec_;
+        dbg.source_scan_accum_ref = options_.source_scan_accum_ref_;
+        dbg.source_scan_accum_pose_type = options_.source_scan_accum_pose_type_;
+        dbg.source_scan_accum_max_trans_m = options_.source_scan_accum_max_trans_m_;
+        dbg.source_scan_accum_max_yaw_deg = options_.source_scan_accum_max_yaw_deg_;
+        dbg.source_scan_accum_voxel_leaf_m = options_.source_scan_accum_voxel_leaf_m_;
+        dbg.source_scan_accum_max_points = options_.source_scan_accum_max_points_;
+        dbg.source_scan_accum_min_points = options_.source_scan_accum_min_points_;
+        dbg.source_scan_accum_max_yaw_rate_degps = options_.source_scan_accum_max_yaw_rate_degps_;
+        dbg.source_scan_accum_max_trans_rate_mps = options_.source_scan_accum_max_trans_rate_mps_;
+        dbg.source_scan_accum_require_monotonic_stamp = options_.source_scan_accum_require_monotonic_stamp_;
+        dbg.source_scan_accum_fallback_single = options_.source_scan_accum_fallback_single_;
+        dbg.source_scan_accum_debug_enable = options_.source_scan_accum_debug_enable_;
+        dbg.source_scan_accum_debug_csv = options_.source_scan_accum_debug_csv_;
         dbg.lidar_auto_init_to_ndt_gate_enable = options_.lidar_auto_init_to_ndt_gate_enable_;
         dbg.init_to_ndt_max_xy_m = options_.init_to_ndt_max_xy_m_;
         dbg.init_to_ndt_max_yaw_deg = options_.init_to_ndt_max_yaw_deg_;
@@ -2145,7 +2105,7 @@ void LoopClosing::ComputeLoopCandidates() {
 }
 
 CloudPtr LoopClosing::BuildNdtSourceCloud(const Keyframe::Ptr& curr_kf, LoopCandidate& c) {
-    c.source_accum_enabled_ = options_.lidar_auto_source_accumulation_enable_ || options_.source_scan_accum_enable_;
+    c.source_accum_enabled_ = options_.source_scan_accum_enable_;
     c.source_accum_used_ = false;
     c.source_accum_frames_ = 0;
     c.source_accum_raw_points_ = 0;
@@ -2213,74 +2173,8 @@ CloudPtr LoopClosing::BuildNdtSourceCloud(const Keyframe::Ptr& curr_kf, LoopCand
         return nullptr;
     }
 
-    if (!options_.lidar_auto_source_accumulation_enable_) {
-        c.source_accum_fallback_reason_ = "disabled";
-        return single_frame;
-    }
-
-    const auto frames_all = curr_kf->GetSourceScanFrames();
-    if (frames_all.empty()) {
-        c.source_accum_fallback_reason_ = "no_source_window";
-        return single_frame;
-    }
-
-    std::vector<Keyframe::SourceScanFrame> frames;
-    frames.reserve(std::min(options_.source_accumulation_frame_count_, static_cast<int>(frames_all.size())));
-    const int start = std::max(0, static_cast<int>(frames_all.size()) - options_.source_accumulation_frame_count_);
-    const double curr_stamp = curr_kf->GetState().timestamp_;
-    for (int i = start; i < static_cast<int>(frames_all.size()); ++i) {
-        const auto& frame = frames_all[i];
-        if (!frame.cloud || frame.cloud->empty()) {
-            continue;
-        }
-        if (options_.source_accumulation_max_time_span_sec_ > 0.0 &&
-            curr_stamp - frame.stamp > options_.source_accumulation_max_time_span_sec_) {
-            continue;
-        }
-        frames.emplace_back(frame);
-    }
-
-    if (static_cast<int>(frames.size()) < options_.source_accumulation_min_frames_) {
-        c.source_accum_frames_ = static_cast<int>(frames.size());
-        c.source_accum_fallback_reason_ = "insufficient_frames";
-        return single_frame;
-    }
-
-    const SE3 T_w_curr = curr_kf->GetLIOPose();
-    CloudPtr accumulated(new PointCloudType);
-    for (const auto& frame : frames) {
-        c.source_accum_raw_points_ += static_cast<long>(frame.cloud->size());
-        const SE3 T_curr_frame = T_w_curr.inverse() * frame.pose;
-        CloudPtr cloud_trans(new PointCloudType);
-        pcl::transformPointCloud(*frame.cloud, *cloud_trans, T_curr_frame.matrix());
-        *accumulated += *cloud_trans;
-    }
-
-    c.source_accum_frames_ = static_cast<int>(frames.size());
-    c.source_scan_count_ = c.source_accum_frames_;
-    if (accumulated->empty()) {
-        c.source_accum_fallback_reason_ = "empty_accumulated_cloud";
-        return single_frame;
-    }
-
-    if (options_.source_accumulation_voxel_leaf_size_m_ > 0.0) {
-        accumulated = VoxelGrid(accumulated, static_cast<float>(options_.source_accumulation_voxel_leaf_size_m_));
-        if (!accumulated || accumulated->empty()) {
-            c.source_accum_fallback_reason_ = "voxel_empty";
-            return single_frame;
-        }
-    }
-
-    accumulated->is_dense = false;
-    accumulated->height = 1;
-    accumulated->width = accumulated->size();
-    c.source_accum_used_ = true;
-    c.source_type_ = "KEYFRAME_SOURCE_ACCUM";
-    c.source_time_span_sec_ = frames.empty() ? 0.0 : frames.back().stamp - frames.front().stamp;
-    c.source_points_before_downsample_ = c.source_accum_raw_points_;
-    c.source_points_after_downsample_ = static_cast<long>(accumulated->size());
-    c.source_accum_fallback_reason_ = "";
-    return accumulated;
+    c.source_accum_fallback_reason_ = "disabled";
+    return single_frame;
 }
 
 void LoopClosing::ExportLoopAlignmentLiveDebug(const LoopCandidate& c, const CloudPtr& target_world,

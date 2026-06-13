@@ -101,12 +101,15 @@ bool LoopDebugLogger::Init(const std::string& config_path, const Options& option
         edges_.open(output_dir_ + "/loop_edges.csv", std::ios::out | std::ios::trunc);
         pgo_.open(output_dir_ + "/loop_pgo_impact.csv", std::ios::out | std::ios::trunc);
         suspects_.open(output_dir_ + "/loop_suspects.csv", std::ios::out | std::ios::trunc);
-        if (options_.source_accumulation_debug_log) {
-            source_accum_.open(output_dir_ + "/loop_source_accum_debug.csv", std::ios::out | std::ios::trunc);
+        if (options_.source_scan_accum_debug_enable) {
+            const std::string source_accum_csv =
+                options_.source_scan_accum_debug_csv.empty() ? "loop_source_scan_accum_debug.csv"
+                                                             : options_.source_scan_accum_debug_csv;
+            source_accum_.open(output_dir_ + "/" + source_accum_csv, std::ios::out | std::ios::trunc);
         }
         if (!keyframes_.is_open() || !candidates_.is_open() || !matches_.is_open() || !gates_.is_open() ||
             !candidate_clusters_.is_open() || !init_to_ndt_.is_open() || !edges_.is_open() || !pgo_.is_open() ||
-            !suspects_.is_open() || (options_.source_accumulation_debug_log && !source_accum_.is_open())) {
+            !suspects_.is_open() || (options_.source_scan_accum_debug_enable && !source_accum_.is_open())) {
             LOG(WARNING) << "failed to open loop debug logs under " << output_dir_;
             return false;
         }
@@ -257,7 +260,7 @@ void LoopDebugLogger::WriteMatch(const MatchRow& row) {
 
 void LoopDebugLogger::WriteSourceAccum(const SourceAccumRow& row) {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (!enabled_ || !options_.source_accumulation_debug_log || !source_accum_.is_open()) return;
+    if (!enabled_ || !options_.source_scan_accum_debug_enable || !source_accum_.is_open()) return;
     try {
         source_accum_ << row.curr_kf_id << "," << row.hist_kf_id << "," << FormatBool(row.enabled) << ","
                       << FormatBool(row.used) << "," << row.configured_frame_count << ","
@@ -580,13 +583,25 @@ void LoopDebugLogger::WriteMetadata(const std::string& config_path, const Option
     out << "      \"fallback_enable\": " << FormatBool(options.same_curr_kf_fallback_enable) << ",\n";
     out << "      \"fallback_top_k\": " << options.same_curr_kf_fallback_top_k << "\n";
     out << "    },\n";
-    out << "    \"lidar_auto_source_accumulation\": {\n";
-    out << "      \"enable\": " << FormatBool(options.lidar_auto_source_accumulation_enable) << ",\n";
-    out << "      \"frame_count\": " << options.source_accumulation_frame_count << ",\n";
-    out << "      \"min_frames\": " << options.source_accumulation_min_frames << ",\n";
-    out << "      \"max_time_span_sec\": " << FormatDouble(options.source_accumulation_max_time_span_sec) << ",\n";
-    out << "      \"voxel_leaf_size_m\": " << FormatDouble(options.source_accumulation_voxel_leaf_size_m) << ",\n";
-    out << "      \"debug_log\": " << FormatBool(options.source_accumulation_debug_log) << "\n";
+    out << "    \"source_scan_accum\": {\n";
+    out << "      \"enable\": " << FormatBool(options.source_scan_accum_enable) << ",\n";
+    out << "      \"max_scans\": " << options.source_scan_accum_max_scans << ",\n";
+    out << "      \"min_scans\": " << options.source_scan_accum_min_scans << ",\n";
+    out << "      \"time_sec\": " << FormatDouble(options.source_scan_accum_time_sec) << ",\n";
+    out << "      \"ref\": \"" << JsonEscapeLocal(options.source_scan_accum_ref) << "\",\n";
+    out << "      \"pose_type\": \"" << JsonEscapeLocal(options.source_scan_accum_pose_type) << "\",\n";
+    out << "      \"max_trans_m\": " << FormatDouble(options.source_scan_accum_max_trans_m) << ",\n";
+    out << "      \"max_yaw_deg\": " << FormatDouble(options.source_scan_accum_max_yaw_deg) << ",\n";
+    out << "      \"voxel_leaf_m\": " << FormatDouble(options.source_scan_accum_voxel_leaf_m) << ",\n";
+    out << "      \"max_points\": " << options.source_scan_accum_max_points << ",\n";
+    out << "      \"min_points\": " << options.source_scan_accum_min_points << ",\n";
+    out << "      \"max_yaw_rate_degps\": " << FormatDouble(options.source_scan_accum_max_yaw_rate_degps) << ",\n";
+    out << "      \"max_trans_rate_mps\": " << FormatDouble(options.source_scan_accum_max_trans_rate_mps) << ",\n";
+    out << "      \"require_monotonic_stamp\": " << FormatBool(options.source_scan_accum_require_monotonic_stamp)
+        << ",\n";
+    out << "      \"fallback_single\": " << FormatBool(options.source_scan_accum_fallback_single) << ",\n";
+    out << "      \"debug_enable\": " << FormatBool(options.source_scan_accum_debug_enable) << ",\n";
+    out << "      \"debug_csv\": \"" << JsonEscapeLocal(options.source_scan_accum_debug_csv) << "\"\n";
     out << "    },\n";
     out << "    \"lidar_auto_init_to_ndt_gate\": {\n";
     out << "      \"enable\": " << FormatBool(options.lidar_auto_init_to_ndt_gate_enable) << ",\n";
@@ -716,17 +731,27 @@ void LoopDebugLogger::WriteSummary() {
         << FormatBool(options_.same_curr_kf_fallback_enable) << "\n";
     out << "- lidar_auto_same_curr_kf_nms.fallback_top_k: "
         << options_.same_curr_kf_fallback_top_k << "\n\n";
-    out << "- lidar_auto_source_accumulation.enable: "
-        << FormatBool(options_.lidar_auto_source_accumulation_enable) << "\n";
-    out << "- lidar_auto_source_accumulation.frame_count: " << options_.source_accumulation_frame_count << "\n";
-    out << "- lidar_auto_source_accumulation.min_frames: " << options_.source_accumulation_min_frames << "\n";
-    out << "- lidar_auto_source_accumulation.max_time_span_sec: "
-        << FormatDouble(options_.source_accumulation_max_time_span_sec) << "\n";
-    out << "- lidar_auto_source_accumulation.voxel_leaf_size_m: "
-        << FormatDouble(options_.source_accumulation_voxel_leaf_size_m) << "\n";
-    out << "- lidar_auto_source_accumulation.debug_log: "
-        << FormatBool(options_.source_accumulation_debug_log) << "\n";
-    out << "- lidar_auto_source_accumulation.source_frame_transform: p_curr_body = T_w_curr^-1 * T_w_i * p_i_body\n\n";
+    out << "- source_scan_accum.enable: " << FormatBool(options_.source_scan_accum_enable) << "\n";
+    out << "- source_scan_accum.max_scans: " << options_.source_scan_accum_max_scans << "\n";
+    out << "- source_scan_accum.min_scans: " << options_.source_scan_accum_min_scans << "\n";
+    out << "- source_scan_accum.time_sec: " << FormatDouble(options_.source_scan_accum_time_sec) << "\n";
+    out << "- source_scan_accum.ref: " << options_.source_scan_accum_ref << "\n";
+    out << "- source_scan_accum.pose_type: " << options_.source_scan_accum_pose_type << "\n";
+    out << "- source_scan_accum.max_trans_m: " << FormatDouble(options_.source_scan_accum_max_trans_m) << "\n";
+    out << "- source_scan_accum.max_yaw_deg: " << FormatDouble(options_.source_scan_accum_max_yaw_deg) << "\n";
+    out << "- source_scan_accum.voxel_leaf_m: " << FormatDouble(options_.source_scan_accum_voxel_leaf_m) << "\n";
+    out << "- source_scan_accum.max_points: " << options_.source_scan_accum_max_points << "\n";
+    out << "- source_scan_accum.min_points: " << options_.source_scan_accum_min_points << "\n";
+    out << "- source_scan_accum.max_yaw_rate_degps: "
+        << FormatDouble(options_.source_scan_accum_max_yaw_rate_degps) << "\n";
+    out << "- source_scan_accum.max_trans_rate_mps: "
+        << FormatDouble(options_.source_scan_accum_max_trans_rate_mps) << "\n";
+    out << "- source_scan_accum.require_monotonic_stamp: "
+        << FormatBool(options_.source_scan_accum_require_monotonic_stamp) << "\n";
+    out << "- source_scan_accum.fallback_single: " << FormatBool(options_.source_scan_accum_fallback_single) << "\n";
+    out << "- source_scan_accum.debug_enable: " << FormatBool(options_.source_scan_accum_debug_enable) << "\n";
+    out << "- source_scan_accum.debug_csv: " << options_.source_scan_accum_debug_csv << "\n";
+    out << "- source_scan_accum.source_frame_transform: p_curr_body = T_w_curr^-1 * T_w_i * p_i_body\n\n";
     out << "- lidar_auto_init_to_ndt_gate.enable: "
         << FormatBool(options_.lidar_auto_init_to_ndt_gate_enable) << "\n";
     out << "- lidar_auto_init_to_ndt_gate.max_xy_m: " << FormatDouble(options_.init_to_ndt_max_xy_m) << "\n";
